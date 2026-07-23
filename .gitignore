@@ -1,0 +1,35 @@
+# Internal planning / notes — keep only README.md
+*.md
+!README.md
+
+# ROS2 colcon build artifacts
+build/
+install/
+log/
+
+# open_vins is cloned separately via vcs import (see .repos)
+src/open_vins/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.eggs/
+*.egg-info/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Session / log files
+*.log
+*.txt
+2026-*.txt
+
+# PDFs (papers/abstracts — not part of the code)
+*.pdf
+
+# tools/ scripts are included in the repo

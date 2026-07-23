@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>yolo_masker</name>
+  <version>1.0.0</version>
+  <description>
+    YOLOv11-based dynamic object masker with ego-motion-compensated optical flow classifier.
+    Publishes per-camera VIO masks (dynamic objects only) and object label maps (all detections)
+    for use with OpenVINS and the DOV stereo object tracker.
+    Requires: pip install ultralytics
+  </description>
+  <maintainer email="demirel.alp@gmail.com">Alp Demirel</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
