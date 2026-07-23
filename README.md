@@ -15,7 +15,7 @@ SoftGate-VIO/
 ├── .repos                 vcs import → Alpsource/open_vins (SoftGate nm lives here)
 ├── src/
 │   ├── ov_softgate/       GT semantic masker · stereo DOV tracker · path recorder
-│   └── yolo_masker/       YOLOv11 masker + ego-motion flow classifier
+│   └── yolo_masker/       YOLOv26s segmentation masker + ego-motion flow classifier
 ├── scripts/
 │   ├── run_experiments.sh       canonical VIODE experiment runner
 │   ├── run_ablation.sh          parameter sweep (masker + estimator)
@@ -47,7 +47,7 @@ VIODE / KAIST ROS2 bag
   │     (GT colour IDs 241–251)                         /cam1/masked
   │   ─ or ─
   ├─► yolo_masker                   ──────────────────► /cam0/masked  (VIO mask)
-  │     (YOLOv11 + flow classifier)                     /cam0/objects (DOV label map)
+  │     (YOLOv26s + flow classifier)                    /cam0/objects (DOV label map)
   │
   ├─► OpenVINS ov_msckf  ◄── SoftGate nm inflation (IMU residual gate)
   │     MSCKF stereo VIO
@@ -69,19 +69,18 @@ VIODE / KAIST ROS2 bag
 
 ## Results (VIODE dataset, 10 runs per scenario)
 
-Mask Δ = ATE improvement of masked VIO over unmasked VIO (positive = better).
+YOLOv26s masker (`yolo26s-seg.pt`, confidence 0.25, flow classifier threshold 2.0 px).
+Mask Δ = ATE improvement of YOLO-masked VIO over unmasked VIO (positive = better).
 
-| Environment  | None   | Low    | Mid    | High          |
-|--------------|-------:|-------:|-------:|:-------------:|
-| Parking lot  | +43.6% | +26.3% | +35.1% | **+66.5%** ★  |
-| City day     |  −6.4% | −15.6% | +26.4% |  +4.5%        |
-| City night   | −19.3% | +32.9% | −12.2% |  +9.0%        |
-
-★ Parking lot / high density beats the GT oracle trajectory: 1.26 m vs 1.48 m ATE (15% lower).
+| Environment  | None   | Low    | Mid    | High     |
+|--------------|-------:|-------:|-------:|---------:|
+| Parking lot  | +43.6% | +26.3% | +35.1% | **+66.5%** |
+| City day     |  −6.4% | −15.6% | +26.4% |  +4.5%   |
+| City night   | −19.3% | +32.9% | −12.2% |  +9.0%   |
 
 Phase 1 IMU-residual gate (α = 3.0): **8 / 12** VIODE scenarios improve over Phase 0 baseline.
 
-DOV post-processor gives an additional **+16%** ATE reduction in parking lot scenarios where quasi-static parked cars provide stable range anchors.
+The DOV post-processor provides additional ATE reduction in parking lot scenarios where quasi-static parked cars supply stable stereo anchors.
 
 ---
 
@@ -179,7 +178,7 @@ Key parameters for `hybrid_speed_estimator` (injectable via `--ros-args`):
 
 ### `yolo_masker`
 
-YOLOv11-based masker with ego-motion-compensated optical flow classifier. Publishes two topics per camera: `/cam0/masked` (VIO mask, dynamic objects only) and `/cam0/objects` (all-detection label map for DOV).
+YOLOv26s-based masker with ego-motion-compensated optical flow classifier. Publishes two topics per camera: `/cam0/masked` (VIO mask, dynamic objects only) and `/cam0/objects` (all-detection label map for DOV).
 
 Key parameters:
 
@@ -194,7 +193,7 @@ Launch:
 
 ```bash
 ros2 launch yolo_masker yolo_masker.launch.py \
-    model_path:=$(pwd)/models/yolo11n-seg.pt
+    model_path:=$(pwd)/models/yolo26s-seg.pt
 ```
 
 ### OpenVINS fork (`Alpsource/open_vins`)
@@ -222,13 +221,13 @@ imu_residual_max_depth: 15.0 # depth gate — suppress nm beyond this depth (m)
 
 ## YOLO model weights
 
-Pre-trained weights are included in `models/`. All models are standard Ultralytics YOLOv11 segmentation checkpoints, trained on COCO. No custom training was performed.
+Pre-trained weights are in `models/`. All models are standard Ultralytics segmentation checkpoints trained on COCO. No custom training was performed.
 
 | File | Size | Use |
 |---|---|---|
-| `yolo11n-seg.pt` | 5.9 MB | Primary (recommended — 20 Hz on CPU, faster on GPU) |
-| `yolo11s-seg.pt` | 20 MB | Higher accuracy, ~2× slower |
-| `yolo26s-seg.pt` | 23 MB | Experimental larger variant |
+| `yolo26s-seg.pt` | 23 MB | **Used in all reported experiments** |
+| `yolo11n-seg.pt` | 5.9 MB | Lightweight alternative for resource-constrained deployment |
+| `yolo11s-seg.pt` | 20 MB | Alternative mid-size variant |
 
 ---
 
