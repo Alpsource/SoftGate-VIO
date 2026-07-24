@@ -296,75 +296,135 @@ if __name__ == "__main__":
     plt.savefig(out_path, dpi=300, bbox_inches='tight')
     print(f"\n[INFO] Plot saved: {out_path}")
 
-    print("\n" + "="*65)
+    from scipy.stats import wilcoxon
+
+    print("\n" + "="*78)
     print(f"RESULTS SUMMARY — {ENV.replace('_',' ').upper()}")
-    stat_name = "median" if USE_MEDIAN else "mean"
-    print(f"Metric: ATE (SE3-aligned RMSE) + Path Length Error (RPE-length)")
-    print(f"Aggregation: {stat_name} over valid runs")
-    print(f"Threshold: RMSE < {FAILURE_THRESHOLD_RMSE}m to be counted")
-    print("="*65)
+    print(f"Metric: ATE (SE3-aligned RMSE, m)  |  divergence threshold: {FAILURE_THRESHOLD_RMSE} m")
+    print(f"Aggregation: mean ± std over valid runs  |  Wilcoxon: one-tailed (masking helps)")
+    print("="*78)
 
-    _agg = np.median if USE_MEDIAN else np.mean
-
-    def get_stats(res_list, key):
-        valid = [r[key] for r in res_list if r[key] < FAILURE_THRESHOLD_RMSE]
-        if not valid: return float('nan'), 0
-        return _agg(valid), len(valid)
+    def get_stats(res_list, key, threshold=FAILURE_THRESHOLD_RMSE):
+        valid = [r[key] for r in res_list if r[key] < threshold]
+        if not valid:
+            return float('nan'), float('nan'), 0, len(res_list)
+        return float(np.mean(valid)), float(np.std(valid, ddof=1) if len(valid) > 1 else 0.0), len(valid), len(res_list)
 
     def get_ple_stats(res_list, key):
         valid = [r[key] for r in res_list if r[key] < 9.0]
-        if not valid: return float('nan'), 0
-        return _agg(valid), len(valid)
+        if not valid:
+            return float('nan'), 0
+        return float(np.mean(valid)), len(valid)
+
+    def paired_wilcoxon(u_res, m_res, key, threshold=FAILURE_THRESHOLD_RMSE):
+        u_by_run = {r['run']: r[key] for r in u_res if r[key] < threshold}
+        m_by_run = {r['run']: r[key] for r in m_res if r[key] < threshold}
+        common = sorted(set(u_by_run) & set(m_by_run))
+        if len(common) < 4:
+            return float('nan'), len(common)
+        diffs = [u_by_run[rid] - m_by_run[rid] for rid in common]
+        if all(d == 0 for d in diffs):
+            return float('nan'), len(common)
+        try:
+            _, p = wilcoxon(diffs, alternative='greater')
+        except Exception:
+            return float('nan'), len(common)
+        return p, len(common)
+
+    def fmt(v):    return f"{v:.3f}" if not np.isnan(v) else "  N/A "
+    def fmts(v):   return f"{v:.3f}" if not np.isnan(v) else "N/A"
+    def fmtp(v):   return f"{v*100:.1f}%" if not np.isnan(v) else " N/A "
+    def fmtpv(v):  return f"{v:.3f}" if not np.isnan(v) else "  N/A"
 
     cmp_short = COMPARE_PREFIX[:3].upper()
-    header = f"{'Density':<8} {'U-VIO ATE':>10} {f'{cmp_short}-VIO ATE':>10} " \
-             f"{'U-DOV ATE':>10} {f'{cmp_short}-DOV ATE':>10} " \
-             f"{'U-VIO PLE':>10} {f'{cmp_short}-VIO PLE':>10} " \
-             f"{'U-DOV PLE':>10} {f'{cmp_short}-DOV PLE':>10} {f'{cmp_short} Δ':>8} {'DOV Δ':>8}"
-    print(f"\n{header}")
-    print("-" * len(header))
+
+    # ── VIO ATE table ────────────────────────────────────────────────────────
+    print(f"\n{'Density':<8}  {'U-ATE mean±std':>17}  {'U N':>5}  "
+          f"{'M-ATE mean±std':>17}  {'M N':>5}  {'Mask Δ':>7}  {'p-value':>8}")
+    print("-" * 78)
 
     for density in DENSITIES:
         u_label = f"Unmasked — {density.capitalize()}"
         m_label = f"{cmp_label} — {density.capitalize()}"
+        u_res   = all_results.get(u_label, [])
+        m_res   = all_results.get(m_label, [])
 
-        u_res = all_results.get(u_label, [])
-        m_res = all_results.get(m_label, [])
+        u_mean, u_std, u_n, u_total = get_stats(u_res, 'vio_rmse')
+        m_mean, m_std, m_n, m_total = get_stats(m_res, 'vio_rmse')
+        p_val, n_pairs = paired_wilcoxon(u_res, m_res, 'vio_rmse')
 
-        u_vio_ate, u_n  = get_stats(u_res, 'vio_rmse')
-        m_vio_ate, m_n  = get_stats(m_res, 'vio_rmse')
-        u_dov_ate, _    = get_stats(u_res, 'dov_rmse')
-        m_dov_ate, _    = get_stats(m_res, 'dov_rmse')
-
-        u_vio_ple, _    = get_ple_stats(u_res, 'vio_ple')
-        m_vio_ple, _    = get_ple_stats(m_res, 'vio_ple')
-        u_dov_ple, _    = get_ple_stats(u_res, 'dov_ple')
-        m_dov_ple, _    = get_ple_stats(m_res, 'dov_ple')
-
-        def fmt(v): return f"{v:.4f}" if not np.isnan(v) else "  N/A  "
-        def fmtp(v): return f"{v*100:.1f}%" if not np.isnan(v) else "  N/A "
-
-        # Masking improvement on ATE: how much does masking help?
-        if not np.isnan(u_vio_ate) and not np.isnan(m_vio_ate) and u_vio_ate > 1e-6:
-            mask_delta = f"{(u_vio_ate - m_vio_ate)/u_vio_ate*100:+.1f}%"
+        if not np.isnan(u_mean) and not np.isnan(m_mean) and u_mean > 1e-6:
+            mask_delta = f"{(u_mean - m_mean) / u_mean * 100:+.1f}%"
         else:
             mask_delta = "  N/A "
 
-        # DOV improvement on masked ATE
-        if not np.isnan(m_vio_ate) and not np.isnan(m_dov_ate) and m_vio_ate > 1e-6:
-            dov_delta = f"{(m_vio_ate - m_dov_ate)/m_vio_ate*100:+.1f}%"
+        p_str = f"{p_val:.3f}" if not np.isnan(p_val) else "  N/A"
+        if not np.isnan(p_val):
+            p_str += "*" if p_val < 0.05 else " "
+
+        u_cell = f"{fmt(u_mean)}±{fmts(u_std)}"
+        m_cell = f"{fmt(m_mean)}±{fmts(m_std)}"
+        print(f"{density:<8}  {u_cell:>17}  {u_n}/{u_total:>3}  "
+              f"{m_cell:>17}  {m_n}/{m_total:>3}  {mask_delta:>7}  {p_str:>8}")
+
+    # ── DOV ATE table ─────────────────────────────────────────────────────────
+    print(f"\n{'Density':<8}  {'M-VIO ATE':>10}  {'M-DOV ATE':>10}  {'DOV Δ':>7}  {'p-value':>8}")
+    print("-" * 52)
+
+    for density in DENSITIES:
+        u_label = f"Unmasked — {density.capitalize()}"
+        m_label = f"{cmp_label} — {density.capitalize()}"
+        u_res   = all_results.get(u_label, [])
+        m_res   = all_results.get(m_label, [])
+
+        m_vio_mean, _, m_vio_n, m_total = get_stats(m_res, 'vio_rmse')
+        m_dov_mean, _, m_dov_n, _       = get_stats(m_res, 'dov_rmse')
+        p_dov, _ = paired_wilcoxon(m_res, m_res, 'dov_rmse')  # placeholder structure
+
+        # Correct DOV Wilcoxon: vio_rmse vs dov_rmse within masked condition
+        m_by_run_vio = {r['run']: r['vio_rmse'] for r in m_res if r['vio_rmse'] < FAILURE_THRESHOLD_RMSE}
+        m_by_run_dov = {r['run']: r['dov_rmse'] for r in m_res if r['dov_rmse'] < FAILURE_THRESHOLD_RMSE}
+        dov_common = sorted(set(m_by_run_vio) & set(m_by_run_dov))
+        if len(dov_common) >= 4:
+            dov_diffs = [m_by_run_vio[rid] - m_by_run_dov[rid] for rid in dov_common]
+            try:
+                _, p_dov = wilcoxon(dov_diffs, alternative='greater') if not all(d == 0 for d in dov_diffs) else (None, float('nan'))
+            except Exception:
+                p_dov = float('nan')
+        else:
+            p_dov = float('nan')
+
+        if not np.isnan(m_vio_mean) and not np.isnan(m_dov_mean) and m_vio_mean > 1e-6:
+            dov_delta = f"{(m_vio_mean - m_dov_mean) / m_vio_mean * 100:+.1f}%"
         else:
             dov_delta = "  N/A "
 
-        print(f"{density:<8} {fmt(u_vio_ate):>10} {fmt(m_vio_ate):>10} "
-              f"{fmt(u_dov_ate):>10} {fmt(m_dov_ate):>10} "
-              f"{fmtp(u_vio_ple):>10} {fmtp(m_vio_ple):>10} "
-              f"{fmtp(u_dov_ple):>10} {fmtp(m_dov_ple):>10} "
-              f"{mask_delta:>8} {dov_delta:>8}")
+        p_dov_str = f"{p_dov:.3f}" if not np.isnan(p_dov) else "  N/A"
+        if not np.isnan(p_dov):
+            p_dov_str += "*" if p_dov < 0.05 else " "
 
-    print(f"\nColumns: U=Unmasked  M=Masked  ATE=m (lower=better)  "
-        f"PLE=% path length error (lower=better)")
-    print(f"Mask Δ = masking improvement on VIO ATE  "
-        f"(+= masking helps,  -= masking hurts)")
-    print(f"DOV Δ  = DOV improvement on masked ATE   "
-        f"(+= DOV helps,  -= DOV hurts)")
+        print(f"{density:<8}  {fmt(m_vio_mean):>10}  {fmt(m_dov_mean):>10}  "
+              f"{dov_delta:>7}  {p_dov_str:>8}")
+
+    # ── PLE table ─────────────────────────────────────────────────────────────
+    print(f"\n{'Density':<8}  {'U-VIO PLE':>10}  {f'{cmp_short}-VIO PLE':>10}  "
+          f"{'U-DOV PLE':>10}  {f'{cmp_short}-DOV PLE':>10}")
+    print("-" * 56)
+
+    for density in DENSITIES:
+        u_label = f"Unmasked — {density.capitalize()}"
+        m_label = f"{cmp_label} — {density.capitalize()}"
+        u_res   = all_results.get(u_label, [])
+        m_res   = all_results.get(m_label, [])
+
+        u_vio_ple, _ = get_ple_stats(u_res, 'vio_ple')
+        m_vio_ple, _ = get_ple_stats(m_res, 'vio_ple')
+        u_dov_ple, _ = get_ple_stats(u_res, 'dov_ple')
+        m_dov_ple, _ = get_ple_stats(m_res, 'dov_ple')
+
+        print(f"{density:<8}  {fmtp(u_vio_ple):>10}  {fmtp(m_vio_ple):>10}  "
+              f"{fmtp(u_dov_ple):>10}  {fmtp(m_dov_ple):>10}")
+
+    print(f"\nU=Unmasked  {cmp_short}=Masked  ATE in m (lower=better)  PLE=path length error %")
+    print(f"Mask Δ: (U-ATE − M-ATE)/U-ATE  |  DOV Δ: (VIO-ATE − DOV-ATE)/VIO-ATE")
+    print(f"Wilcoxon: one-tailed, paired on run IDs valid in both conditions  |  *p<0.05")
