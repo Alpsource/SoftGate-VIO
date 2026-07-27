@@ -53,41 +53,49 @@ RUNS_PER_SCENARIO="${1:-3}"
 # ── BATCH DEFINITIONS ─────────────────────
 # ==========================================
 # Format (pipe-separated):
-#   "label | alpha | sigma_px | dead_zone"
+#   "label | alpha | sigma_px | dead_zone | max_depth"
+#
+#   max_depth: imu_residual_max_depth in metres; 0.0 = disabled (default)
 #
 # Stage 2.2 — α × σ grid (15 combinations)
 # Stage 2.3 — dead-zone ablation (τ column, fixed α=3 σ=5 from Phase 1 default)
+# Stage 2.4 — depth gate ablation (max_depth column, fixed α=3 σ=5 dead_zone=3.0)
 #
 # Uncomment the sections you want to run.
 
 BATCH_DEFS=(
     # ── Stage 2.2: α × σ grid ─────────────────────────────────────────
     # α=1
-    "a1_s2   | 1 |  2 | 3.0"
-    "a1_s5   | 1 |  5 | 3.0"
-    "a1_s10  | 1 | 10 | 3.0"
+    "a1_s2   | 1 |  2 | 3.0 | 0.0"
+    "a1_s5   | 1 |  5 | 3.0 | 0.0"
+    "a1_s10  | 1 | 10 | 3.0 | 0.0"
     # α=2
-    "a2_s2   | 2 |  2 | 3.0"
-    "a2_s5   | 2 |  5 | 3.0"
-    "a2_s10  | 2 | 10 | 3.0"
+    "a2_s2   | 2 |  2 | 3.0 | 0.0"
+    "a2_s5   | 2 |  5 | 3.0 | 0.0"
+    "a2_s10  | 2 | 10 | 3.0 | 0.0"
     # α=3
-    "a3_s2   | 3 |  2 | 3.0"
-    "a3_s5   | 3 |  5 | 3.0"
-    "a3_s10  | 3 | 10 | 3.0"
+    "a3_s2   | 3 |  2 | 3.0 | 0.0"
+    "a3_s5   | 3 |  5 | 3.0 | 0.0"
+    "a3_s10  | 3 | 10 | 3.0 | 0.0"
     # α=4
-    "a4_s2   | 4 |  2 | 3.0"
-    "a4_s5   | 4 |  5 | 3.0"
-    "a4_s10  | 4 | 10 | 3.0"
+    "a4_s2   | 4 |  2 | 3.0 | 0.0"
+    "a4_s5   | 4 |  5 | 3.0 | 0.0"
+    "a4_s10  | 4 | 10 | 3.0 | 0.0"
     # α=5
-    "a5_s2   | 5 |  2 | 3.0"
-    "a5_s5   | 5 |  5 | 3.0"
-    "a5_s10  | 5 | 10 | 3.0"
+    "a5_s2   | 5 |  2 | 3.0 | 0.0"
+    "a5_s5   | 5 |  5 | 3.0 | 0.0"
+    "a5_s10  | 5 | 10 | 3.0 | 0.0"
     # ── Stage 2.3: dead-zone ablation (α=3 σ=5, τ sweep) ─────────────
-    # "dz0     | 3 |  5 | 0.0"   # no dead zone
-    # "dz1     | 3 |  5 | 1.0"   # τ = 1.5 px
-    # "dz2     | 3 |  5 | 2.0"   # τ = 3.0 px
-    # "dz3     | 3 |  5 | 3.0"   # τ = 4.5 px  ← current default (already in grid above)
-    # "dz4     | 3 |  5 | 4.0"   # τ = 6.0 px
+    # "dz0     | 3 |  5 | 0.0 | 0.0"   # no dead zone
+    # "dz1     | 3 |  5 | 1.0 | 0.0"   # τ = 1.5 px
+    # "dz2     | 3 |  5 | 2.0 | 0.0"   # τ = 3.0 px
+    # "dz3     | 3 |  5 | 3.0 | 0.0"   # τ = 4.5 px  ← current default (already in grid)
+    # "dz4     | 3 |  5 | 4.0 | 0.0"   # τ = 6.0 px
+    # ── Stage 2.4: depth gate ablation (α=3 σ=5 dead_zone=3.0) ───────
+    # "depth_off | 3 | 5 | 3.0 |  0.0"   # no depth gate (baseline)
+    # "depth_10  | 3 | 5 | 3.0 | 10.0"   # gate at 10 m
+    # "depth_15  | 3 | 5 | 3.0 | 15.0"   # gate at 15 m  ← repo default
+    # "depth_25  | 3 | 5 | 3.0 | 25.0"   # gate at 25 m
 )
 
 # ==========================================
@@ -170,14 +178,16 @@ make_sweep_config() {
     local alpha="$1"
     local sigma_px="$2"
     local dead_zone="$3"
+    local max_depth="$4"
 
     cp "$BASE_CONFIG" "$SWEEP_CONFIG"
 
-    # Override the four nm parameters in-place
-    sed -i "s/^use_imu_residual:.*$/use_imu_residual: true/"      "$SWEEP_CONFIG"
-    sed -i "s/^imu_residual_alpha:.*$/imu_residual_alpha: ${alpha}/"         "$SWEEP_CONFIG"
-    sed -i "s/^imu_residual_sigma_px:.*$/imu_residual_sigma_px: ${sigma_px}/" "$SWEEP_CONFIG"
-    sed -i "s/^imu_residual_dead_zone:.*$/imu_residual_dead_zone: ${dead_zone}/" "$SWEEP_CONFIG"
+    # Override the five nm parameters in-place
+    sed -i "s/^use_imu_residual:.*$/use_imu_residual: true/"                         "$SWEEP_CONFIG"
+    sed -i "s/^imu_residual_alpha:.*$/imu_residual_alpha: ${alpha}/"                 "$SWEEP_CONFIG"
+    sed -i "s/^imu_residual_sigma_px:.*$/imu_residual_sigma_px: ${sigma_px}/"        "$SWEEP_CONFIG"
+    sed -i "s/^imu_residual_dead_zone:.*$/imu_residual_dead_zone: ${dead_zone}/"     "$SWEEP_CONFIG"
+    sed -i "s/^imu_residual_max_depth:.*$/imu_residual_max_depth: ${max_depth}/"     "$SWEEP_CONFIG"
 }
 
 # ==========================================
@@ -334,11 +344,13 @@ for batch_idx in "${!BATCH_DEFS[@]}"; do
     BATCH_NUM=$((batch_idx + 1))
     RAW="${BATCH_DEFS[$batch_idx]}"
 
-    IFS='|' read -r B_LABEL B_ALPHA B_SIGMA B_DEAD <<< "$RAW"
+    IFS='|' read -r B_LABEL B_ALPHA B_SIGMA B_DEAD B_DEPTH <<< "$RAW"
     B_LABEL="${B_LABEL// /}"
     B_ALPHA="${B_ALPHA// /}"
     B_SIGMA="${B_SIGMA// /}"
     B_DEAD="${B_DEAD// /}"
+    B_DEPTH="${B_DEPTH// /}"
+    B_DEPTH="${B_DEPTH:-0.0}"   # default: depth gate disabled
 
     BATCH_OUT="${BATCH_ROOT}/batch_${BATCH_NUM}"
     ANALYSIS_LOG="${BATCH_OUT}/analysis.log"
@@ -347,14 +359,14 @@ for batch_idx in "${!BATCH_DEFS[@]}"; do
     echo ""
     echo "######################################################################"
     echo "  BATCH ${BATCH_NUM} / ${TOTAL_BATCHES} : ${B_LABEL}"
-    echo "  alpha=${B_ALPHA}  sigma_px=${B_SIGMA}  dead_zone=${B_DEAD}"
+    echo "  alpha=${B_ALPHA}  sigma_px=${B_SIGMA}  dead_zone=${B_DEAD}  max_depth=${B_DEPTH}"
     echo "  Output: ${BATCH_OUT}"
     echo "######################################################################"
 
     # Generate sweep config for this batch
-    make_sweep_config "$B_ALPHA" "$B_SIGMA" "$B_DEAD"
+    make_sweep_config "$B_ALPHA" "$B_SIGMA" "$B_DEAD" "$B_DEPTH"
     echo "  [CONFIG] Sweep config written: ${SWEEP_CONFIG}"
-    echo "    use_imu_residual: true  alpha=${B_ALPHA}  sigma_px=${B_SIGMA}  dead_zone=${B_DEAD}"
+    echo "    use_imu_residual: true  alpha=${B_ALPHA}  sigma_px=${B_SIGMA}  dead_zone=${B_DEAD}  max_depth=${B_DEPTH}"
 
     # ── Run all 12 masked scenarios ──────────────────────────────────────
     for dataset in "${DATASETS[@]}"; do
@@ -374,6 +386,7 @@ for batch_idx in "${!BATCH_DEFS[@]}"; do
         echo "  alpha           = ${B_ALPHA}"
         echo "  sigma_px        = ${B_SIGMA}"
         echo "  dead_zone       = ${B_DEAD}"
+        echo "  max_depth       = ${B_DEPTH}"
         echo "  runs_per_scenario = ${RUNS_PER_SCENARIO}"
         echo "========================================================================"
         echo ""
@@ -395,6 +408,7 @@ label             = ${B_LABEL}
 alpha             = ${B_ALPHA}
 sigma_px          = ${B_SIGMA}
 dead_zone         = ${B_DEAD}
+max_depth         = ${B_DEPTH}
 runs_per_scenario = ${RUNS_PER_SCENARIO}
 dilation_kernel   = ${DILATION}
 max_mask_fraction = ${MAX_MASK}
@@ -453,12 +467,10 @@ echo ""
 echo "  Results archived to:"
 for batch_idx in "${!BATCH_DEFS[@]}"; do
     BATCH_NUM=$((batch_idx + 1))
-    IFS='|' read -r B_LABEL B_ALPHA B_SIGMA B_DEAD <<< "${BATCH_DEFS[$batch_idx]}"
-    B_LABEL="${B_LABEL// /}"
-    B_ALPHA="${B_ALPHA// /}"
-    B_SIGMA="${B_SIGMA// /}"
-    B_DEAD="${B_DEAD// /}"
-    echo "    batch_${BATCH_NUM}/  [${B_LABEL}]  α=${B_ALPHA} σ=${B_SIGMA} τ=${B_DEAD}"
+    IFS='|' read -r B_LABEL B_ALPHA B_SIGMA B_DEAD B_DEPTH <<< "${BATCH_DEFS[$batch_idx]}"
+    B_LABEL="${B_LABEL// /}"; B_ALPHA="${B_ALPHA// /}"
+    B_SIGMA="${B_SIGMA// /}"; B_DEAD="${B_DEAD// /}"; B_DEPTH="${B_DEPTH:-0.0}"
+    echo "    batch_${BATCH_NUM}/  [${B_LABEL}]  α=${B_ALPHA} σ=${B_SIGMA} τ=${B_DEAD} d=${B_DEPTH}"
 done
 echo ""
 echo "  Each batch_N/ contains:"
