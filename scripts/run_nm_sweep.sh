@@ -1,28 +1,34 @@
 #!/bin/bash
 # =============================================================================
 # run_nm_sweep.sh
-# Stage 2.2 / 2.3 nm-parameter sweep: α × σ grid + dead-zone ablation
+# Stages 2.1–2.4 nm-parameter sweep
 #
 # Usage:
 #   ./run_nm_sweep.sh [RUNS_PER_SCENARIO]
 #
-#   RUNS_PER_SCENARIO : repetitions per scenario (default: 3)
+#   RUNS_PER_SCENARIO : repetitions per scenario (default: 5)
+#
+# Stages covered (activate by uncommenting entries in BATCH_DEFS):
+#   2.1  imu_residual_max_tri_error sweep {2, 5, 10, 20} px
+#   2.2  α × σ grid (15 combinations)
+#   2.3  dead-zone multiplier sweep {0, 1, 2, 3, 4}
+#   2.4  depth gate sweep {off, 10, 15, 25} m
 #
 # Each batch runs all 12 MASKED scenarios (3 envs × 4 densities).
 # Unmasked is not re-run — unmasked ATE does not depend on nm params.
 #
-# Per batch, a temporary estimator config is generated with the batch's
-# α, σ, and dead_zone values injected.  All other estimator params
-# (masker settings, feature count, etc.) are kept at the VIODE defaults.
+# Per batch, a temporary estimator config is generated inside the install
+# config directory so relative calibration file paths resolve correctly.
+# All other estimator params are kept at the VIODE defaults.
 #
-# Masker params are fixed at the Stage 2 winners:
+# Masker params are fixed at the Stage 2 baseline:
 #   dilation_kernel=13  max_mask_fraction=0.80
 #   min_disparity=1.2   min_features=8   orb_nfeatures=100
 #
 # Results archived to: sim_results/ablation_nm/batch_N/
-#   params.txt      — all six parameter values
+#   params.txt      — all parameter values for the batch
 #   analysis.log    — analyze_results_v5.py output for all 3 envs
-#   masked-*/       — 12 scenario folders
+#   masked-*/       — 12 scenario folders with all CSVs
 # =============================================================================
 
 # ==========================================
@@ -33,8 +39,11 @@ RESULTS_BASE="${WORKSPACE}/sim_results"
 OPENVINS_WS="${WORKSPACE}/openvins_ws"
 VIODE_DATASET="${WORKSPACE}/Downloads_Ext/VIODE_Dataset"
 OTP_SCRIPT="${VIODE_DATASET}/odom_to_path.py"
-BASE_CONFIG="${OPENVINS_WS}/src/open_vins/config/viode_config/estimator_config.yaml"
-SWEEP_CONFIG="/tmp/estimator_config_nm_sweep.yaml"
+# IMPORTANT: SWEEP_CONFIG must live in the same directory as the calibration
+# YAMLs so that relative_config_imu / relative_config_imucam resolve correctly.
+INSTALL_CFG_DIR="${OPENVINS_WS}/install/ov_msckf/share/ov_msckf/config/viode_config"
+BASE_CONFIG="${INSTALL_CFG_DIR}/estimator_config.yaml"
+SWEEP_CONFIG="${INSTALL_CFG_DIR}/estimator_config_sweep.yaml"
 DOV_SCRIPT="${RESULTS_BASE}/dov_postprocessor.py"
 ANALYZE_SCRIPT="${RESULTS_BASE}/analyze_results_v5.py"
 VENV_PYTHON="${RESULTS_BASE}/env/bin/python3"
@@ -52,50 +61,54 @@ RUNS_PER_SCENARIO="${1:-3}"
 # ==========================================
 # ── BATCH DEFINITIONS ─────────────────────
 # ==========================================
-# Format (pipe-separated):
-#   "label | alpha | sigma_px | dead_zone | max_depth"
+# Format (pipe-separated, 6 fields):
+#   "label | alpha | sigma_px | dead_zone | max_depth | max_tri_error"
 #
-#   max_depth: imu_residual_max_depth in metres; 0.0 = disabled (default)
+#   max_depth:      imu_residual_max_depth in metres; 0.0 = disabled
+#   max_tri_error:  imu_residual_max_tri_error in px RMS; 0.0 = disabled
 #
-# Stage 2.2 — α × σ grid (15 combinations)
-# Stage 2.3 — dead-zone ablation (τ column, fixed α=3 σ=5 from Phase 1 default)
-# Stage 2.4 — depth gate ablation (max_depth column, fixed α=3 σ=5 dead_zone=3.0)
-#
-# Uncomment the sections you want to run.
+# Run one stage at a time: uncomment that stage's block, comment the others.
 
 BATCH_DEFS=(
+    # ── Stage 2.1: triangulation quality gate sweep ───────────────────
+    # Fixed: α=3 σ=5 dead_zone=3.0 max_depth=0.0 — only tri_error varies
+    # "tri2   | 3 | 5 | 3.0 | 0.0 |  2.0"   # tight gate: ~2 px RMS
+    # "tri5   | 3 | 5 | 3.0 | 0.0 |  5.0"   # moderate
+    # "tri10  | 3 | 5 | 3.0 | 0.0 | 10.0"   # loose
+    # "tri20  | 3 | 5 | 3.0 | 0.0 | 20.0"   # very loose (almost never fires)
+
     # ── Stage 2.2: α × σ grid ─────────────────────────────────────────
-    # α=1
-    "a1_s2   | 1 |  2 | 3.0 | 0.0"
-    "a1_s5   | 1 |  5 | 3.0 | 0.0"
-    "a1_s10  | 1 | 10 | 3.0 | 0.0"
-    # α=2
-    "a2_s2   | 2 |  2 | 3.0 | 0.0"
-    "a2_s5   | 2 |  5 | 3.0 | 0.0"
-    "a2_s10  | 2 | 10 | 3.0 | 0.0"
-    # α=3
-    "a3_s2   | 3 |  2 | 3.0 | 0.0"
-    "a3_s5   | 3 |  5 | 3.0 | 0.0"
-    "a3_s10  | 3 | 10 | 3.0 | 0.0"
-    # α=4
-    "a4_s2   | 4 |  2 | 3.0 | 0.0"
-    "a4_s5   | 4 |  5 | 3.0 | 0.0"
-    "a4_s10  | 4 | 10 | 3.0 | 0.0"
-    # α=5
-    "a5_s2   | 5 |  2 | 3.0 | 0.0"
-    "a5_s5   | 5 |  5 | 3.0 | 0.0"
-    "a5_s10  | 5 | 10 | 3.0 | 0.0"
-    # ── Stage 2.3: dead-zone ablation (α=3 σ=5, τ sweep) ─────────────
-    # "dz0     | 3 |  5 | 0.0 | 0.0"   # no dead zone
-    # "dz1     | 3 |  5 | 1.0 | 0.0"   # τ = 1.5 px
-    # "dz2     | 3 |  5 | 2.0 | 0.0"   # τ = 3.0 px
-    # "dz3     | 3 |  5 | 3.0 | 0.0"   # τ = 4.5 px  ← current default (already in grid)
-    # "dz4     | 3 |  5 | 4.0 | 0.0"   # τ = 6.0 px
-    # ── Stage 2.4: depth gate ablation (α=3 σ=5 dead_zone=3.0) ───────
-    # "depth_off | 3 | 5 | 3.0 |  0.0"   # no depth gate (baseline)
-    # "depth_10  | 3 | 5 | 3.0 | 10.0"   # gate at 10 m
-    # "depth_15  | 3 | 5 | 3.0 | 15.0"   # gate at 15 m  ← repo default
-    # "depth_25  | 3 | 5 | 3.0 | 25.0"   # gate at 25 m
+    # Fixed: dead_zone=3.0 max_depth=0.0 max_tri_error=0.0
+    "a1_s2   | 1 |  2 | 3.0 | 0.0 | 0.0"
+    "a1_s5   | 1 |  5 | 3.0 | 0.0 | 0.0"
+    "a1_s10  | 1 | 10 | 3.0 | 0.0 | 0.0"
+    "a2_s2   | 2 |  2 | 3.0 | 0.0 | 0.0"
+    "a2_s5   | 2 |  5 | 3.0 | 0.0 | 0.0"
+    "a2_s10  | 2 | 10 | 3.0 | 0.0 | 0.0"
+    "a3_s2   | 3 |  2 | 3.0 | 0.0 | 0.0"
+    "a3_s5   | 3 |  5 | 3.0 | 0.0 | 0.0"
+    "a3_s10  | 3 | 10 | 3.0 | 0.0 | 0.0"
+    "a4_s2   | 4 |  2 | 3.0 | 0.0 | 0.0"
+    "a4_s5   | 4 |  5 | 3.0 | 0.0 | 0.0"
+    "a4_s10  | 4 | 10 | 3.0 | 0.0 | 0.0"
+    "a5_s2   | 5 |  2 | 3.0 | 0.0 | 0.0"
+    "a5_s5   | 5 |  5 | 3.0 | 0.0 | 0.0"
+    "a5_s10  | 5 | 10 | 3.0 | 0.0 | 0.0"
+
+    # ── Stage 2.3: dead-zone ablation ─────────────────────────────────
+    # Fixed: α=3 σ=5 max_depth=0.0 max_tri_error=0.0 — τ×σ_px varies
+    # "dz0  | 3 | 5 | 0.0 | 0.0 | 0.0"   # no dead zone  → τ = 0.0 px
+    # "dz1  | 3 | 5 | 1.0 | 0.0 | 0.0"   #               → τ = 1.5 px
+    # "dz2  | 3 | 5 | 2.0 | 0.0 | 0.0"   #               → τ = 3.0 px
+    # "dz3  | 3 | 5 | 3.0 | 0.0 | 0.0"   # current default → τ = 4.5 px (in grid above)
+    # "dz4  | 3 | 5 | 4.0 | 0.0 | 0.0"   #               → τ = 6.0 px
+
+    # ── Stage 2.4: depth gate ablation ────────────────────────────────
+    # Fixed: α=3 σ=5 dead_zone=3.0 max_tri_error=0.0 — max_depth varies
+    # "d_off | 3 | 5 | 3.0 |  0.0 | 0.0"   # no depth gate
+    # "d_10  | 3 | 5 | 3.0 | 10.0 | 0.0"   # gate at 10 m
+    # "d_15  | 3 | 5 | 3.0 | 15.0 | 0.0"   # gate at 15 m  ← repo config
+    # "d_25  | 3 | 5 | 3.0 | 25.0 | 0.0"   # gate at 25 m
 )
 
 # ==========================================
@@ -179,15 +192,19 @@ make_sweep_config() {
     local sigma_px="$2"
     local dead_zone="$3"
     local max_depth="$4"
+    local max_tri_error="$5"
 
     cp "$BASE_CONFIG" "$SWEEP_CONFIG"
 
-    # Override the five nm parameters in-place
-    sed -i "s/^use_imu_residual:.*$/use_imu_residual: true/"                         "$SWEEP_CONFIG"
-    sed -i "s/^imu_residual_alpha:.*$/imu_residual_alpha: ${alpha}/"                 "$SWEEP_CONFIG"
-    sed -i "s/^imu_residual_sigma_px:.*$/imu_residual_sigma_px: ${sigma_px}/"        "$SWEEP_CONFIG"
-    sed -i "s/^imu_residual_dead_zone:.*$/imu_residual_dead_zone: ${dead_zone}/"     "$SWEEP_CONFIG"
-    sed -i "s/^imu_residual_max_depth:.*$/imu_residual_max_depth: ${max_depth}/"     "$SWEEP_CONFIG"
+    # Override all six nm parameters in-place.
+    # SWEEP_CONFIG lives in the same directory as kalibr_imu_chain.yaml and
+    # kalibr_imucam_chain.yaml so OpenVINS resolves relative paths correctly.
+    sed -i "s/^use_imu_residual:.*$/use_imu_residual: true/"                                   "$SWEEP_CONFIG"
+    sed -i "s/^imu_residual_alpha:.*$/imu_residual_alpha: ${alpha}/"                           "$SWEEP_CONFIG"
+    sed -i "s/^imu_residual_sigma_px:.*$/imu_residual_sigma_px: ${sigma_px}/"                  "$SWEEP_CONFIG"
+    sed -i "s/^imu_residual_dead_zone:.*$/imu_residual_dead_zone: ${dead_zone}/"               "$SWEEP_CONFIG"
+    sed -i "s/^imu_residual_max_depth:.*$/imu_residual_max_depth: ${max_depth}/"               "$SWEEP_CONFIG"
+    sed -i "s/^imu_residual_max_tri_error:.*$/imu_residual_max_tri_error: ${max_tri_error}/"   "$SWEEP_CONFIG"
 }
 
 # ==========================================
@@ -344,13 +361,13 @@ for batch_idx in "${!BATCH_DEFS[@]}"; do
     BATCH_NUM=$((batch_idx + 1))
     RAW="${BATCH_DEFS[$batch_idx]}"
 
-    IFS='|' read -r B_LABEL B_ALPHA B_SIGMA B_DEAD B_DEPTH <<< "$RAW"
+    IFS='|' read -r B_LABEL B_ALPHA B_SIGMA B_DEAD B_DEPTH B_TRI <<< "$RAW"
     B_LABEL="${B_LABEL// /}"
     B_ALPHA="${B_ALPHA// /}"
     B_SIGMA="${B_SIGMA// /}"
     B_DEAD="${B_DEAD// /}"
-    B_DEPTH="${B_DEPTH// /}"
-    B_DEPTH="${B_DEPTH:-0.0}"   # default: depth gate disabled
+    B_DEPTH="${B_DEPTH// /}"; B_DEPTH="${B_DEPTH:-0.0}"
+    B_TRI="${B_TRI// /}";     B_TRI="${B_TRI:-0.0}"
 
     BATCH_OUT="${BATCH_ROOT}/batch_${BATCH_NUM}"
     ANALYSIS_LOG="${BATCH_OUT}/analysis.log"
@@ -359,14 +376,14 @@ for batch_idx in "${!BATCH_DEFS[@]}"; do
     echo ""
     echo "######################################################################"
     echo "  BATCH ${BATCH_NUM} / ${TOTAL_BATCHES} : ${B_LABEL}"
-    echo "  alpha=${B_ALPHA}  sigma_px=${B_SIGMA}  dead_zone=${B_DEAD}  max_depth=${B_DEPTH}"
+    echo "  alpha=${B_ALPHA}  sigma_px=${B_SIGMA}  dead_zone=${B_DEAD}  max_depth=${B_DEPTH}  max_tri_error=${B_TRI}"
     echo "  Output: ${BATCH_OUT}"
     echo "######################################################################"
 
     # Generate sweep config for this batch
-    make_sweep_config "$B_ALPHA" "$B_SIGMA" "$B_DEAD" "$B_DEPTH"
+    make_sweep_config "$B_ALPHA" "$B_SIGMA" "$B_DEAD" "$B_DEPTH" "$B_TRI"
     echo "  [CONFIG] Sweep config written: ${SWEEP_CONFIG}"
-    echo "    use_imu_residual: true  alpha=${B_ALPHA}  sigma_px=${B_SIGMA}  dead_zone=${B_DEAD}  max_depth=${B_DEPTH}"
+    echo "    use_imu_residual=true  α=${B_ALPHA}  σ=${B_SIGMA}  dz=${B_DEAD}  depth=${B_DEPTH}  tri=${B_TRI}"
 
     # ── Run all 12 masked scenarios ──────────────────────────────────────
     for dataset in "${DATASETS[@]}"; do
@@ -387,6 +404,7 @@ for batch_idx in "${!BATCH_DEFS[@]}"; do
         echo "  sigma_px        = ${B_SIGMA}"
         echo "  dead_zone       = ${B_DEAD}"
         echo "  max_depth       = ${B_DEPTH}"
+        echo "  max_tri_error   = ${B_TRI}"
         echo "  runs_per_scenario = ${RUNS_PER_SCENARIO}"
         echo "========================================================================"
         echo ""
@@ -409,6 +427,7 @@ alpha             = ${B_ALPHA}
 sigma_px          = ${B_SIGMA}
 dead_zone         = ${B_DEAD}
 max_depth         = ${B_DEPTH}
+max_tri_error     = ${B_TRI}
 runs_per_scenario = ${RUNS_PER_SCENARIO}
 dilation_kernel   = ${DILATION}
 max_mask_fraction = ${MAX_MASK}
@@ -454,7 +473,7 @@ EOF
     echo "  [BATCH ${BATCH_NUM} COMPLETE] Results at: ${BATCH_OUT}"
 done
 
-# Clean up temp config
+# Remove temp sweep config from the install dir
 rm -f "$SWEEP_CONFIG"
 
 # ==========================================
@@ -467,10 +486,10 @@ echo ""
 echo "  Results archived to:"
 for batch_idx in "${!BATCH_DEFS[@]}"; do
     BATCH_NUM=$((batch_idx + 1))
-    IFS='|' read -r B_LABEL B_ALPHA B_SIGMA B_DEAD B_DEPTH <<< "${BATCH_DEFS[$batch_idx]}"
-    B_LABEL="${B_LABEL// /}"; B_ALPHA="${B_ALPHA// /}"
-    B_SIGMA="${B_SIGMA// /}"; B_DEAD="${B_DEAD// /}"; B_DEPTH="${B_DEPTH:-0.0}"
-    echo "    batch_${BATCH_NUM}/  [${B_LABEL}]  α=${B_ALPHA} σ=${B_SIGMA} τ=${B_DEAD} d=${B_DEPTH}"
+    IFS='|' read -r B_LABEL B_ALPHA B_SIGMA B_DEAD B_DEPTH B_TRI <<< "${BATCH_DEFS[$batch_idx]}"
+    B_LABEL="${B_LABEL// /}"; B_ALPHA="${B_ALPHA// /}"; B_SIGMA="${B_SIGMA// /}"
+    B_DEAD="${B_DEAD// /}"; B_DEPTH="${B_DEPTH:-0.0}"; B_TRI="${B_TRI:-0.0}"
+    echo "    batch_${BATCH_NUM}/  [${B_LABEL}]  α=${B_ALPHA} σ=${B_SIGMA} τ=${B_DEAD} d=${B_DEPTH} tri=${B_TRI}"
 done
 echo ""
 echo "  Each batch_N/ contains:"
