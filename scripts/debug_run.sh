@@ -19,7 +19,7 @@
 #   ./debug_run.sh parking_lot high yolo false   # YOLO masking only
 # =============================================================================
 
-WORKSPACE="/path/to/your/workspace"   # ← set this to your data root
+WORKSPACE="/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283"   # ← set this to your data root
 OPENVINS_WS="${WORKSPACE}/openvins_ws"
 VIODE_DATASET="${WORKSPACE}/Downloads_Ext/VIODE_Dataset"
 OTP_SCRIPT="${VIODE_DATASET}/odom_to_path.py"
@@ -31,6 +31,7 @@ DATASET="${1:-parking_lot}"
 LEVEL="${2:-high}"
 MASK_SOURCE="${3:-yolo}"   # yolo | gt | none
 IMU_RESIDUAL="${4:-false}" # true | false
+YOLO_DEVICE="${YOLO_DEVICE:-cuda}"  # cuda or cpu; override: YOLO_DEVICE=cpu ./debug_run.sh
 BAG_PATH="${VIODE_DATASET}/${DATASET}_${LEVEL}"
 
 source "${SETUP}"
@@ -73,7 +74,7 @@ sleep 3
 # ── 2. Masker ──────────────────────────────────────────────────────────
 if [[ "$MASK_SOURCE" == "yolo" ]]; then
     new_term "yolo_masker" \
-        "ros2 run yolo_masker yolo_masker --ros-args -p model_path:=${OPENVINS_WS}/models/yolo26s-seg.pt"
+        "ros2 run yolo_masker yolo_masker --ros-args -p model_path:=${OPENVINS_WS}/models/yolo26s-seg.pt -p device:=${YOLO_DEVICE}"
 elif [[ "$MASK_SOURCE" == "none" ]]; then
     # All-zeros masks → pure OpenVINS, no dynamic object masking
     new_term "masker_empty" "ros2 run ov_softgate masker --ros-args -p force_empty:=true"

@@ -20,7 +20,7 @@
 # Saves to ablation_batches/batch_N/ (auto-numbered).
 # =============================================================================
 
-WORKSPACE="/path/to/your/workspace"   # ← set this to your data root
+WORKSPACE="/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283"   # ← set this to your data root
 RESULTS_BASE="${WORKSPACE}/sim_results"
 OPENVINS_WS="${WORKSPACE}/openvins_ws"
 VIODE_DATASET="${WORKSPACE}/Downloads_Ext/VIODE_Dataset"
@@ -31,7 +31,7 @@ CONFIG_IMU="${CONFIG_BASE}/estimator_config_imu_residual.yaml"
 DOV_SCRIPT="${RESULTS_BASE}/dov_postprocessor.py"
 ANALYZE_SCRIPT="${RESULTS_BASE}/analyze_results_v5.py"
 VENV_PYTHON="${RESULTS_BASE}/env/bin/python3"
-BATCH_ROOT="${RESULTS_BASE}/ablation_batches"
+BATCH_ROOT="${RESULTS_BASE}/phase1_eval"
 MODEL_PATH="${OPENVINS_WS}/models/yolo26s-seg.pt"
 
 RUNS_PER_SCENARIO="${1:-10}"
@@ -46,9 +46,11 @@ CONF_THRESHOLD=0.25
 FLOW_DYNAMIC_THRESHOLD=2.0
 FLOW_MIN_FEATURES=5
 USE_FLOW_CLASSIFIER=true
+YOLO_DEVICE="${YOLO_DEVICE:-cuda}"  # cuda or cpu; override: YOLO_DEVICE=cpu ./run_phase1_evaluation.sh
 # ── IMU residual parameters (Option C) ───────────────────────────────────────
-IMU_RESIDUAL_ALPHA=3.0
-IMU_RESIDUAL_SIGMA_PX=5.0
+IMU_RESIDUAL_ALPHA=1.5
+IMU_RESIDUAL_SIGMA_PX=10.0
+IMU_RESIDUAL_INIT_DELAY=5.0
 # ─────────────────────────────────────────────────────────────────────────────
 
 declare -A DENSITY_LEVELS
@@ -58,11 +60,12 @@ DENSITY_LEVELS["city_night"]="none low mid high"
 
 DATASETS=("parking_lot" "city_day" "city_night")
 
-# Three conditions in one batch:
-#   unmasked  → U-VIO  (plain config, no YOLO mask, no IMU residual)
-#   yolo      → M-VIO-YOLO (plain config, YOLO mask active)
-#   yolo_imu  → M+IMU-VIO  (IMU residual config, YOLO mask active)
-MASK_MODES=("unmasked" "yolo" "yolo_imu")
+# Four conditions in one batch:
+#   unmasked  → U-VIO       (plain config, force_empty mask, no IMU residual)
+#   imu_only  → IMU-VIO     (IMU residual config, force_empty mask, no YOLO)
+#   yolo      → M-VIO-YOLO  (plain config, YOLO mask active, no IMU residual)
+#   yolo_imu  → M+IMU-VIO   (IMU residual config, YOLO mask active)
+MASK_MODES=("unmasked" "imu_only" "yolo" "yolo_imu")
 
 KILL_LIST=(
     "ov_msckf"
@@ -84,7 +87,7 @@ BATCH_OUT="${BATCH_ROOT}/batch_${BATCH_NUM}"
 ANALYSIS_LOG="${BATCH_OUT}/analysis.log"
 PARAMS_FILE="${BATCH_OUT}/params.txt"
 
-BATCH_LABEL="gate2_optionC_alpha${IMU_RESIDUAL_ALPHA}_sigma${IMU_RESIDUAL_SIGMA_PX}"
+BATCH_LABEL="4cond_alpha${IMU_RESIDUAL_ALPHA}_sigma${IMU_RESIDUAL_SIGMA_PX}_delay${IMU_RESIDUAL_INIT_DELAY}"
 
 # ── CLEANUP ───────────────────────────────────────────────────────────────────
 cleanup_nodes() {
@@ -107,6 +110,7 @@ cleanup_nodes() {
     rm -rf /dev/shm/rtps_*     2>/dev/null || true
     sleep 2
     ros2 daemon start > /dev/null 2>&1 || true
+    timeout 15 bash -c 'until ros2 node list > /dev/null 2>&1; do sleep 0.5; done' || true
     echo "  [CLEANUP] Done."
 }
 
@@ -158,7 +162,7 @@ run_scenario() {
 
         # ── Select config based on condition ────────────────────────────────
         local config_path
-        if [[ "$mask_mode" == "yolo_imu" ]]; then
+        if [[ "$mask_mode" == "yolo_imu" || "$mask_mode" == "imu_only" ]]; then
             config_path="$CONFIG_IMU"    # use_imu_residual: true
         else
             config_path="$CONFIG_PLAIN"  # use_imu_residual: false
@@ -178,6 +182,7 @@ run_scenario() {
             ros2 run yolo_masker yolo_masker \
                 --ros-args \
                 -p model_path:="${MODEL_PATH}" \
+                -p device:="${YOLO_DEVICE}" \
                 -p confidence_threshold:="${CONF_THRESHOLD}" \
                 -p dilation_kernel:="${DILATION_KERNEL}" \
                 -p max_mask_fraction:="${MAX_MASK_FRACTION}" \
@@ -186,18 +191,21 @@ run_scenario() {
                 -p flow_min_features:="${FLOW_MIN_FEATURES}" \
                 > /dev/null 2>&1 &
         else
-            # unmasked: force_empty keeps 4-topic sync but publishes zero mask
+            # unmasked / imu_only: force_empty keeps 4-topic sync but publishes zero mask
             ros2 run yolo_masker yolo_masker \
                 --ros-args \
                 -p model_path:="${MODEL_PATH}" \
+                -p device:="${YOLO_DEVICE}" \
                 -p force_empty:=true \
                 > /dev/null 2>&1 &
         fi
-        echo "      -> Waiting for yolo_masker..."
-        timeout 15 bash -c \
-            'until pgrep -f "yolo_masker" > /dev/null 2>&1; do sleep 0.3; done' \
-            || echo "      [WARN] yolo_masker did not appear — proceeding anyway"
-        sleep 3
+        # Wait for yolo_masker to advertise /cam0/masked (model load can take 5-10s).
+        # pgrep only checks process existence; this waits for the topic to be live.
+        echo "      -> Waiting for yolo_masker to be ready..."
+        timeout 60 bash -c \
+            'until ros2 topic list 2>/dev/null | grep -q "/cam0/masked"; do sleep 0.5; done' \
+            || echo "      [WARN] /cam0/masked not found — proceeding anyway"
+        sleep 5  # DDS warm-up: let masker→OpenVINS 4-topic sync establish
 
         # ── 3. GT path converter ─────────────────────────────────────────────
         python3 "$OTP_SCRIPT" \
@@ -224,19 +232,21 @@ run_scenario() {
             --ros-args -p use_sim_time:=false > /dev/null 2>&1 &
 
         # ── 5. Data recorders ─────────────────────────────────────────────────
-        ros2 run ov_softgate path_recorder -- "$i" > /dev/null 2>&1 &
+        ros2 run ov_softgate path_recorder -- "$i" \
+            --ros-args -p output_dir:="${RESULTS_BASE}" > /dev/null 2>&1 &
         ros2 run ov_softgate hybrid_speed_estimator "$i" \
             --ros-args \
             -p mask_source:=yolo \
             -p min_disparity:="${MIN_DISPARITY}" \
             -p min_features:="${MIN_FEATURES}" \
             -p orb_nfeatures:="${ORB_NFEATURES}" \
-            > /dev/null 2>&1 &
-        sleep 0.5
+            -p calib_file:="${OPENVINS_WS}/src/open_vins/config/viode_config/kalibr_imucam_chain.yaml" \
+            -p output_dir:="${RESULTS_BASE}" > /dev/null 2>&1 &
+        sleep 1
 
         # ── 6. Play bag ──────────────────────────────────────────────────────
         echo "      -> Playing: $(basename "$bag_path")"
-        ros2 bag play "$bag_path" --clock
+        ros2 bag play "$bag_path" --clock --read-ahead-queue-size 10000
         echo "      -> Bag finished."
 
         # ── 7. Flush + kill ──────────────────────────────────────────────────
@@ -270,7 +280,7 @@ mkdir -p "$BATCH_OUT"
 
 echo ""
 echo "=========================================================="
-echo "  VIODE-VIO Phase 1 Gate 2 — Three-Condition Comparison"
+echo "  VIODE-VIO Phase 1 Gate 2 — Four-Condition Ablation"
 echo "  Batch         : batch_${BATCH_NUM} (${BATCH_LABEL})"
 echo "  Runs/scenario : ${RUNS_PER_SCENARIO}"
 echo "  Output        : ${BATCH_OUT}"
@@ -278,6 +288,7 @@ echo "=========================================================="
 echo ""
 echo "  Conditions:"
 echo "    unmasked  : force_empty + use_imu_residual=false  → U-VIO baseline"
+echo "    imu_only  : force_empty + use_imu_residual=true   → IMU-VIO (ablation)"
 echo "    yolo      : YOLO mask  + use_imu_residual=false   → M-VIO-YOLO"
 echo "    yolo_imu  : YOLO mask  + use_imu_residual=true    → M+IMU-VIO (Option C)"
 echo ""
@@ -302,10 +313,11 @@ echo "  [ANALYSIS] Running analyze_results_v5.py..."
 {
     echo "========================================================================"
     echo "  BATCH ${BATCH_NUM} — ${BATCH_LABEL}"
-    echo "  Conditions: unmasked (U-VIO) | yolo (M-VIO-YOLO) | yolo_imu (M+IMU-VIO)"
+    echo "  Conditions: unmasked (U-VIO) | imu_only (IMU-VIO) | yolo (M-VIO-YOLO) | yolo_imu (M+IMU-VIO)"
     echo "  use_imu_residual (yolo_imu)  = true (Option C: triangulated depth)"
     echo "  imu_residual_alpha           = ${IMU_RESIDUAL_ALPHA}"
     echo "  imu_residual_sigma_px        = ${IMU_RESIDUAL_SIGMA_PX}"
+    echo "  imu_residual_init_delay      = ${IMU_RESIDUAL_INIT_DELAY}"
     echo "  dead_zone                    = 3 * up_msckf_sigma_px = 4.5 px"
     echo "  yolo conf                    = ${CONF_THRESHOLD}"
     echo "  dilation_kernel              = ${DILATION_KERNEL}"
@@ -321,10 +333,10 @@ for env in "parking_lot" "city_day" "city_night"; do
         || echo "    [WARN] analyze_results failed for ${env}"
 done
 
-echo "    -> Gate 2 criterion analysis..."
+echo "    -> Gate 2 criterion analysis (runs from RESULTS_BASE before archive)..."
 GATE2_SCRIPT="${RESULTS_BASE}/analyze_gate2.py"
 if [[ -f "$GATE2_SCRIPT" ]]; then
-    python3 "$GATE2_SCRIPT" --batch "$BATCH_OUT" \
+    python3 "$GATE2_SCRIPT" --batch "$RESULTS_BASE" \
         | tee -a "$ANALYSIS_LOG"
 else
     echo "    [WARN] analyze_gate2.py not found at ${GATE2_SCRIPT}"
@@ -334,11 +346,12 @@ fi
 cat > "$PARAMS_FILE" << EOF
 batch_number          = ${BATCH_NUM}
 label                 = ${BATCH_LABEL}
-conditions            = unmasked | yolo | yolo_imu
-use_imu_residual      = true (yolo_imu only)
+conditions            = unmasked | imu_only | yolo | yolo_imu
+use_imu_residual      = true (imu_only and yolo_imu)
 imu_residual_method   = Option C (triangulated p_FinG, not stereo disparity)
 imu_residual_alpha    = ${IMU_RESIDUAL_ALPHA}
 imu_residual_sigma_px = ${IMU_RESIDUAL_SIGMA_PX}
+imu_residual_init_delay = ${IMU_RESIDUAL_INIT_DELAY}
 dead_zone_px          = 3 * up_msckf_sigma_px (= 4.5 px for sigma_pix=1.5)
 yolo_conf             = ${CONF_THRESHOLD}
 dilation_kernel       = ${DILATION_KERNEL}
@@ -364,7 +377,7 @@ for mask_mode in "${MASK_MODES[@]}"; do
         done
     done
 done
-echo "  [ARCHIVE] ${ARCHIVED}/36 folders archived."
+echo "  [ARCHIVE] ${ARCHIVED}/48 folders archived."
 
 for env in "parking_lot" "city_day" "city_night"; do
     plot="${RESULTS_BASE}/Trajectory_Analysis_${env}.png"

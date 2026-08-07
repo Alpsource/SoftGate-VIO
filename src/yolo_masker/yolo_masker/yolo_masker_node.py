@@ -180,6 +180,7 @@ class YoloMasker(Node):
         self.flow_min_features      = self.declare_parameter('flow_min_features',      5    ).get_parameter_value().integer_value
         self.use_clahe              = self.declare_parameter('use_clahe',              True ).get_parameter_value().bool_value
         self.clahe_clip_limit       = self.declare_parameter('clahe_clip_limit',       2.0  ).get_parameter_value().double_value
+        self.device                 = self.declare_parameter('device',                 'cuda').get_parameter_value().string_value
 
         # CLAHE applied to BGR before YOLO inference — same enhancement OpenVINS
         # uses internally (histogram_method: CLAHE). Improves night-time detection
@@ -222,13 +223,13 @@ class YoloMasker(Node):
         elif not self.model_path:
             self.get_logger().error("model_path parameter is empty — set it with: --ros-args -p model_path:=<path/to/yolo.pt>")
         else:
-            self.get_logger().info(f"Loading YOLO segmentation model: {self.model_path}")
+            self.get_logger().info(f"Loading YOLO segmentation model: {self.model_path} (device={self.device})")
             self._model = YOLO(self.model_path)
-            self._model.to('cuda')
-            # Warm up GPU to eliminate first-frame latency spike
+            self._model.to(self.device)
+            # Warm up to eliminate first-frame latency spike
             _dummy = np.zeros((480, 752, 3), dtype=np.uint8)
             self._model(_dummy, classes=self.classes_to_mask, conf=self.confidence_threshold, verbose=False)
-            self.get_logger().info("YOLO model loaded and GPU warmed up.")
+            self.get_logger().info(f"YOLO model loaded and warmed up on {self.device}.")
 
         # Start background YOLO thread before subscribing so it's ready immediately
         self._yolo_thread = threading.Thread(target=self._yolo_loop, daemon=True)

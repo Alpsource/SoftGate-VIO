@@ -40,6 +40,8 @@ CONF_THRESHOLD=0.25
 FLOW_DYNAMIC_THRESHOLD=2.0
 FLOW_MIN_FEATURES=5
 USE_FLOW_CLASSIFIER=true
+# Device for YOLO inference: 'cuda' (GPU) or 'cpu'. Override: YOLO_DEVICE=cpu ./run_yolo_experiments.sh
+YOLO_DEVICE="${YOLO_DEVICE:-cuda}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 declare -A DENSITY_LEVELS
@@ -93,6 +95,7 @@ cleanup_nodes() {
     rm -rf /dev/shm/rtps_*     2>/dev/null || true
     sleep 2
     ros2 daemon start > /dev/null 2>&1 || true
+    timeout 15 bash -c 'until ros2 node list > /dev/null 2>&1; do sleep 0.5; done' || true
     echo "  [CLEANUP] Done."
 }
 
@@ -155,6 +158,7 @@ run_scenario() {
             ros2 run yolo_masker yolo_masker \
                 --ros-args \
                 -p model_path:="${MODEL_PATH}" \
+                -p device:="${YOLO_DEVICE}" \
                 -p confidence_threshold:="${CONF_THRESHOLD}" \
                 -p dilation_kernel:="${DILATION_KERNEL}" \
                 -p max_mask_fraction:="${MAX_MASK_FRACTION}" \
@@ -166,6 +170,7 @@ run_scenario() {
             ros2 run yolo_masker yolo_masker \
                 --ros-args \
                 -p model_path:="${MODEL_PATH}" \
+                -p device:="${YOLO_DEVICE}" \
                 -p force_empty:=true \
                 > /dev/null 2>&1 &
         fi
@@ -211,7 +216,7 @@ run_scenario() {
             -p min_features:="${MIN_FEATURES}" \
             -p orb_nfeatures:="${ORB_NFEATURES}" \
             > /dev/null 2>&1 &
-        sleep 0.5
+        sleep 5  # DDS warm-up: let masker→OpenVINS 4-topic sync establish
 
         # ── 6. Play bag ──────────────────────────────────────────────────
         echo "      -> Playing: $(basename "$bag_path")"

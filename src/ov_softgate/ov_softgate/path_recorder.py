@@ -48,52 +48,61 @@ class PathRecorder(Node):
             self.save_to_csv()
 
     def save_to_csv(self):
-        self.get_logger().info("Saving CSV data...")
-        
+        self.get_logger().info(f"Saving CSV data (run_id={self.run_id})...")
+
         save_folder = self.output_dir if self.output_dir else os.path.expanduser('~/ov_results')
         os.makedirs(save_folder, exist_ok=True)
 
-        # 1. Save VIO Path
-        if self.vio_path_msg:
-            data = []
-            for pose in self.vio_path_msg.poses:
-                data.append({
-                    'timestamp': pose.header.stamp.sec + pose.header.stamp.nanosec * 1e-9,
-                    'x': pose.pose.position.x, 'y': pose.pose.position.y, 'z': pose.pose.position.z,
-                    'qx': pose.pose.orientation.x, 'qy': pose.pose.orientation.y, 'qz': pose.pose.orientation.z, 'qw': pose.pose.orientation.w
-                })
-            filename = os.path.join(save_folder, f"vio_path_run_{self.run_id}.csv")
-            pd.DataFrame(data).to_csv(filename, index=False)
-            self.get_logger().info(f"Saved {filename}")
-        else:
-            self.get_logger().warn("No VIO path data received!")
+        try:
+            # 1. Save VIO Path
+            if self.vio_path_msg:
+                data = []
+                for pose in self.vio_path_msg.poses:
+                    data.append({
+                        'timestamp': pose.header.stamp.sec + pose.header.stamp.nanosec * 1e-9,
+                        'x': pose.pose.position.x, 'y': pose.pose.position.y, 'z': pose.pose.position.z,
+                        'qx': pose.pose.orientation.x, 'qy': pose.pose.orientation.y, 'qz': pose.pose.orientation.z, 'qw': pose.pose.orientation.w
+                    })
+                filename = os.path.join(save_folder, f"vio_path_run_{self.run_id}.csv")
+                pd.DataFrame(data).to_csv(filename, index=False)
+                self.get_logger().info(f"Saved {filename}")
+            else:
+                self.get_logger().warn("No VIO path data received!")
 
-        # 2. Save GT Path
-        if self.gt_path_msg:
-            data = []
-            for pose in self.gt_path_msg.poses:
-                data.append({
-                    'timestamp': pose.header.stamp.sec + pose.header.stamp.nanosec * 1e-9,
-                    'x': pose.pose.position.x, 'y': pose.pose.position.y, 'z': pose.pose.position.z,
-                    'qx': pose.pose.orientation.x, 'qy': pose.pose.orientation.y, 'qz': pose.pose.orientation.z, 'qw': pose.pose.orientation.w
-                })
-            filename = os.path.join(save_folder, f"gt_path_run_{self.run_id}.csv")
-            pd.DataFrame(data).to_csv(filename, index=False)
-            self.get_logger().info(f"Saved {filename}")
-        
-        if self.dov_odom_poses:
-            filename = os.path.join(save_folder, f"dov_path_run_{self.run_id}.csv")
-            pd.DataFrame(self.dov_odom_poses).to_csv(filename, index=False)
-            self.get_logger().info(f"Saved {filename}")
-        else:
-            self.get_logger().warn("No GT path data received!")
+            # 2. Save GT Path
+            if self.gt_path_msg:
+                data = []
+                for pose in self.gt_path_msg.poses:
+                    data.append({
+                        'timestamp': pose.header.stamp.sec + pose.header.stamp.nanosec * 1e-9,
+                        'x': pose.pose.position.x, 'y': pose.pose.position.y, 'z': pose.pose.position.z,
+                        'qx': pose.pose.orientation.x, 'qy': pose.pose.orientation.y, 'qz': pose.pose.orientation.z, 'qw': pose.pose.orientation.w
+                    })
+                filename = os.path.join(save_folder, f"gt_path_run_{self.run_id}.csv")
+                pd.DataFrame(data).to_csv(filename, index=False)
+                self.get_logger().info(f"Saved {filename}")
+            else:
+                self.get_logger().warn("No GT path data received!")
+
+            if self.dov_odom_poses:
+                filename = os.path.join(save_folder, f"dov_path_run_{self.run_id}.csv")
+                pd.DataFrame(self.dov_odom_poses).to_csv(filename, index=False)
+                self.get_logger().info(f"Saved {filename}")
+        except Exception as e:
+            self.get_logger().error(f"save_to_csv FAILED (run_id={self.run_id!r}): {e}")
 
 def main(args=None):
-    # Parse run_id safely
+    # Take the first positional arg before --ros-args as the run_id.
+    # Iterating the full sys.argv and keeping the last match breaks when
+    # --ros-args -p key:=value is present, because key:=value overwrites
+    # the actual run number.
     run_id = "0"
-    for arg in sys.argv:
-        if not arg.startswith('--ros-args') and not arg.endswith('.py') and not arg.startswith('/'):
-             run_id = arg
+    for arg in sys.argv[1:]:
+        if arg == '--ros-args':
+            break
+        if not arg.startswith('-') and not arg.startswith('/') and not arg.endswith('.py'):
+            run_id = arg
+            break
 
     rclpy.init(args=args)
     node = PathRecorder(run_id)

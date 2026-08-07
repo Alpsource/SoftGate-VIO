@@ -34,7 +34,7 @@
 # ==========================================
 # ── PATHS ─────────────────────────────────
 # ==========================================
-WORKSPACE="/path/to/your/workspace"   # ← set this to your data root
+WORKSPACE="/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283"   # ← set this to your data root
 RESULTS_BASE="${WORKSPACE}/sim_results"
 OPENVINS_WS="${WORKSPACE}/openvins_ws"
 VIODE_DATASET="${WORKSPACE}/Downloads_Ext/VIODE_Dataset"
@@ -56,7 +56,7 @@ MIN_DISP=1.2
 MIN_FEAT=8
 ORB_NFEAT=100
 
-RUNS_PER_SCENARIO="${1:-3}"
+RUNS_PER_SCENARIO="${1:-5}"
 
 # ==========================================
 # ── BATCH DEFINITIONS ─────────────────────
@@ -79,21 +79,21 @@ BATCH_DEFS=(
 
     # ── Stage 2.2: α × σ grid ─────────────────────────────────────────
     # Fixed: dead_zone=3.0 max_depth=0.0 max_tri_error=0.0
-    "a1_s2   | 1 |  2 | 3.0 | 0.0 | 0.0"
-    "a1_s5   | 1 |  5 | 3.0 | 0.0 | 0.0"
-    "a1_s10  | 1 | 10 | 3.0 | 0.0 | 0.0"
-    "a2_s2   | 2 |  2 | 3.0 | 0.0 | 0.0"
-    "a2_s5   | 2 |  5 | 3.0 | 0.0 | 0.0"
-    "a2_s10  | 2 | 10 | 3.0 | 0.0 | 0.0"
-    "a3_s2   | 3 |  2 | 3.0 | 0.0 | 0.0"
-    "a3_s5   | 3 |  5 | 3.0 | 0.0 | 0.0"
-    "a3_s10  | 3 | 10 | 3.0 | 0.0 | 0.0"
-    "a4_s2   | 4 |  2 | 3.0 | 0.0 | 0.0"
-    "a4_s5   | 4 |  5 | 3.0 | 0.0 | 0.0"
-    "a4_s10  | 4 | 10 | 3.0 | 0.0 | 0.0"
-    "a5_s2   | 5 |  2 | 3.0 | 0.0 | 0.0"
-    "a5_s5   | 5 |  5 | 3.0 | 0.0 | 0.0"
-    "a5_s10  | 5 | 10 | 3.0 | 0.0 | 0.0"
+    # "a1_s2   | 1 |  2 | 3.0 | 0.0 | 0.0"
+    # "a1_s5   | 1 |  5 | 3.0 | 0.0 | 0.0"
+    # "a1_s10  | 1 | 10 | 3.0 | 0.0 | 0.0"
+    # "a2_s2   | 2 |  2 | 3.0 | 0.0 | 0.0"
+    # "a2_s5   | 2 |  5 | 3.0 | 0.0 | 0.0"
+    # "a2_s10  | 2 | 10 | 3.0 | 0.0 | 0.0"
+    # "a3_s2   | 3 |  2 | 3.0 | 0.0 | 0.0"
+    # "a3_s5   | 3 |  5 | 3.0 | 0.0 | 0.0"
+    # "a3_s10  | 3 | 10 | 3.0 | 0.0 | 0.0"
+    # "a4_s2   | 4 |  2 | 3.0 | 0.0 | 0.0"
+    # "a4_s5   | 4 |  5 | 3.0 | 0.0 | 0.0"
+    # "a4_s10  | 4 | 10 | 3.0 | 0.0 | 0.0"
+    # "a5_s2   | 5 |  2 | 3.0 | 0.0 | 0.0"
+    # "a5_s5   | 5 |  5 | 3.0 | 0.0 | 0.0"
+    # "a5_s10  | 5 | 10 | 3.0 | 0.0 | 0.0"
 
     # ── Stage 2.3: dead-zone ablation ─────────────────────────────────
     # Fixed: α=3 σ=5 max_depth=0.0 max_tri_error=0.0 — τ×σ_px varies
@@ -105,10 +105,10 @@ BATCH_DEFS=(
 
     # ── Stage 2.4: depth gate ablation ────────────────────────────────
     # Fixed: α=3 σ=5 dead_zone=3.0 max_tri_error=0.0 — max_depth varies
-    # "d_off | 3 | 5 | 3.0 |  0.0 | 0.0"   # no depth gate
-    # "d_10  | 3 | 5 | 3.0 | 10.0 | 0.0"   # gate at 10 m
-    # "d_15  | 3 | 5 | 3.0 | 15.0 | 0.0"   # gate at 15 m  ← repo config
-    # "d_25  | 3 | 5 | 3.0 | 25.0 | 0.0"   # gate at 25 m
+    "d_off | 3 | 5 | 3.0 |  0.0 | 0.0"   # no depth gate
+    "d_10  | 3 | 5 | 3.0 | 10.0 | 0.0"   # gate at 10 m
+    "d_15  | 3 | 5 | 3.0 | 15.0 | 0.0"   # gate at 15 m  ← repo config
+    "d_25  | 3 | 5 | 3.0 | 25.0 | 0.0"   # gate at 25 m
 )
 
 # ==========================================
@@ -157,6 +157,8 @@ cleanup_nodes() {
     rm -rf /dev/shm/rtps_*     2>/dev/null || true
     sleep 2
     ros2 daemon start > /dev/null 2>&1 || true
+    # Wait until the daemon is accepting connections before returning.
+    timeout 15 bash -c 'until ros2 node list > /dev/null 2>&1; do sleep 0.5; done' || true
     echo "  [CLEANUP] Done."
 }
 
@@ -242,11 +244,20 @@ run_scenario() {
         echo "    ── Run ${i} / ${RUNS_PER_SCENARIO} ──────────────────"
 
         # ── 1. OpenVINS (with sweep config) ─────────────────────────────
+        OV_LOG="${BATCH_OUT}/${scenario_name}_run${i}.log"
         ros2 launch ov_msckf subscribe.launch.py \
             config_path:="$SWEEP_CONFIG" \
-            use_sim_time:=true > /dev/null 2>&1 &
-        timeout 15 bash -c \
+            > "$OV_LOG" 2>&1 &
+        OV_PID=$!
+        timeout 20 bash -c \
             'until ros2 node list 2>/dev/null | grep -q "ov_msckf"; do sleep 0.3; done' || true
+        if ! ros2 node list 2>/dev/null | grep -q "ov_msckf"; then
+            echo "    [ERROR] OpenVINS did not start in 20 s. Log: ${OV_LOG}"
+            echo "    [ERROR] Skipping run ${i} — check ${OV_LOG} for the crash."
+            kill "$OV_PID" 2>/dev/null || true
+            cleanup_nodes
+            continue
+        fi
         sleep 2
 
         # ── 2. Semantic masker (masked mode) ────────────────────────────
@@ -254,7 +265,11 @@ run_scenario() {
             --ros-args \
             -p dilation_kernel:="${DILATION}" \
             -p max_mask_fraction:="${MAX_MASK}" > /dev/null 2>&1 &
-        sleep 0.5
+        # Wait for the masker to advertise /cam0/masked before continuing.
+        # OpenVINS (use_dynamic_mask=true) won't initialize until it sees that topic.
+        timeout 20 bash -c \
+            'until ros2 topic list 2>/dev/null | grep -q "/cam0/masked"; do sleep 0.3; done' || true
+        sleep 5  # DDS warm-up: let masker→OpenVINS 4-topic sync establish
 
         # ── 3. Ground-truth path converter ──────────────────────────────
         python3 "$OTP_SCRIPT" \
@@ -291,11 +306,15 @@ run_scenario() {
             -p orb_nfeatures:="${ORB_NFEAT}" \
             -p calib_file:="${OPENVINS_WS}/src/open_vins/config/viode_config/kalibr_imucam_chain.yaml" \
             -p output_dir:="${RESULTS_BASE}" > /dev/null 2>&1 &
-        sleep 0.5
+
+        # Wait for path_recorder to be registered before playing the bag.
+        # Python nodes are slow to start on the first run of a session (bytecode
+        # compilation + ROS discovery). Without this wait, run 1 misses messages.
+        sleep 1
 
         # ── 6. Play bag ──────────────────────────────────────────────────
         echo "      -> Playing: $(basename "$bag_path")"
-        ros2 bag play "$bag_path" --clock
+        ros2 bag play "$bag_path" --clock --read-ahead-queue-size 10000
         echo "      -> Bag finished."
 
         # ── 7. Flush + kill nodes ────────────────────────────────────────
@@ -348,17 +367,22 @@ mkdir -p "$BATCH_ROOT"
 # ==========================================
 TOTAL_BATCHES="${#BATCH_DEFS[@]}"
 
+# Continue from existing batches so successive stage runs don't overwrite each other.
+EXISTING_BATCHES=$(ls -d "${BATCH_ROOT}/batch_"* 2>/dev/null | wc -l)
+START_BATCH=$((EXISTING_BATCHES + 1))
+
 echo ""
 echo "=========================================================="
-echo "  nm Parameter Sweep (Stage 2.2 / 2.3)"
+echo "  nm Parameter Sweep (Stages 2.1–2.4)"
 echo "  Total batches         : ${TOTAL_BATCHES}"
+echo "  Starting batch        : ${START_BATCH}"
 echo "  Runs per scenario     : ${RUNS_PER_SCENARIO}"
 echo "  Scenarios per batch   : 12 (masked only)"
 echo "  Archive root          : ${BATCH_ROOT}"
 echo "=========================================================="
 
 for batch_idx in "${!BATCH_DEFS[@]}"; do
-    BATCH_NUM=$((batch_idx + 1))
+    BATCH_NUM=$((START_BATCH + batch_idx))
     RAW="${BATCH_DEFS[$batch_idx]}"
 
     IFS='|' read -r B_LABEL B_ALPHA B_SIGMA B_DEAD B_DEPTH B_TRI <<< "$RAW"
@@ -372,6 +396,7 @@ for batch_idx in "${!BATCH_DEFS[@]}"; do
     BATCH_OUT="${BATCH_ROOT}/batch_${BATCH_NUM}"
     ANALYSIS_LOG="${BATCH_OUT}/analysis.log"
     PARAMS_FILE="${BATCH_OUT}/params.txt"
+    mkdir -p "$BATCH_OUT"
 
     echo ""
     echo "######################################################################"
@@ -485,7 +510,7 @@ echo "  All ${TOTAL_BATCHES} batches complete."
 echo ""
 echo "  Results archived to:"
 for batch_idx in "${!BATCH_DEFS[@]}"; do
-    BATCH_NUM=$((batch_idx + 1))
+    BATCH_NUM=$((START_BATCH + batch_idx))
     IFS='|' read -r B_LABEL B_ALPHA B_SIGMA B_DEAD B_DEPTH B_TRI <<< "${BATCH_DEFS[$batch_idx]}"
     B_LABEL="${B_LABEL// /}"; B_ALPHA="${B_ALPHA// /}"; B_SIGMA="${B_SIGMA// /}"
     B_DEAD="${B_DEAD// /}"; B_DEPTH="${B_DEPTH:-0.0}"; B_TRI="${B_TRI:-0.0}"

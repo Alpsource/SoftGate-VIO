@@ -115,6 +115,7 @@ cleanup_nodes() {
     rm -rf /dev/shm/rtps_*     2>/dev/null || true
     sleep 2
     ros2 daemon start > /dev/null 2>&1 || true
+    timeout 15 bash -c 'until ros2 node list > /dev/null 2>&1; do sleep 0.5; done' || true
     echo "  [CLEANUP] Done."
 }
 
@@ -204,7 +205,7 @@ run_scenario() {
                 -p dilation_kernel:="${dilation}" \
                 -p max_mask_fraction:="${max_mask}" > /dev/null 2>&1 &
         fi
-        sleep 0.5
+        sleep 5  # DDS warm-up: let masker→OpenVINS 4-topic sync establish
 
         # ── 3. Ground-truth path converter ──────────────────────────
         python3 "$OTP_SCRIPT" \
@@ -245,7 +246,7 @@ run_scenario() {
 
         # ── 6. Play bag ──────────────────────────────────────────────
         echo "      -> Playing: $(basename "$bag_path")"
-        ros2 bag play "$bag_path" --clock
+        ros2 bag play "$bag_path" --clock --read-ahead-queue-size 10000
         echo "      -> Bag finished."
 
         # ── 7. Flush + kill nodes ────────────────────────────────────

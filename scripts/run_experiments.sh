@@ -150,7 +150,7 @@ cleanup_nodes() {
     rm -rf /dev/shm/rtps_*     2>/dev/null || true
     sleep 2
     ros2 daemon start > /dev/null 2>&1 || true
-
+    timeout 15 bash -c 'until ros2 node list > /dev/null 2>&1; do sleep 0.5; done' || true
     echo "  [CLEANUP] Done."
 }
 
@@ -244,7 +244,11 @@ run_scenario() {
                     --ros-args -p force_empty:=true > /dev/null 2>&1 &
             fi
         fi
-        sleep 0.5
+        # Wait for the masker to advertise /cam0/masked (YOLO load can take 5-10s).
+        timeout 60 bash -c \
+            'until ros2 topic list 2>/dev/null | grep -q "/cam0/masked"; do sleep 0.5; done' \
+            || echo "      [WARN] /cam0/masked not found — proceeding anyway"
+        sleep 5  # DDS warm-up: let masker→OpenVINS 4-topic sync establish
 
         # ── 3. Ground-truth path converter ───────────────────────────
         python3 "$OTP_SCRIPT" \
@@ -281,11 +285,13 @@ run_scenario() {
             -p mask_source:="$MASK_SOURCE" \
             -p calib_file:="${OPENVINS_WS}/src/open_vins/config/viode_config/kalibr_imucam_chain.yaml" \
             -p output_dir:="${RESULTS_BASE}" > /dev/null 2>&1 &
-        sleep 0.5
+        timeout 15 bash -c \
+            'until ros2 node list 2>/dev/null | grep -q "path_recorder"; do sleep 0.3; done' || true
+        sleep 1
 
         # ── 6. Play bag (blocks until the bag finishes) ───────────────
         echo "    -> Playing bag: $(basename "$bag_path")"
-        ros2 bag play "$bag_path" --clock
+        ros2 bag play "$bag_path" --clock --read-ahead-queue-size 10000
         echo "    -> Bag playback finished."
 
         # ── 7. Flush recorders, kill all nodes ────────────────────────

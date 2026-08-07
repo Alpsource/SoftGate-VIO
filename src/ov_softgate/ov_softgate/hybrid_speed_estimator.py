@@ -26,9 +26,10 @@ class FastHybridSpeedEstimator(Node):
         self.csv_data = []  # [timestamp, obj_id, x_cam, y_cam, z_cam]
 
         # Configurable paths — override with --ros-args -p calib_file:=<path>
-        # or -p output_dir:=<path>.  Defaults preserve backward compatibility
-        # with existing run scripts that do not pass these parameters.
-        calib_file = self.declare_parameter('calib_file', calib_file_path).get_parameter_value().string_value
+        # or -p output_dir:=<path>.
+        _default_calib = calib_file_path or \
+            '/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283/openvins_ws/src/open_vins/config/viode_config/kalibr_imucam_chain.yaml'
+        calib_file = self.declare_parameter('calib_file', _default_calib).get_parameter_value().string_value
         self.output_dir = self.declare_parameter('output_dir', '').get_parameter_value().string_value
 
         self.load_kalibr_params(calib_file)
