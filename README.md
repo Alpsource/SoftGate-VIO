@@ -21,6 +21,14 @@ SoftGate-VIO/
 │   ├── run_ablation.sh          parameter sweep (masker + estimator)
 │   ├── run_yolo_experiments.sh  YOLO-masked batch runner
 │   ├── run_phase1_evaluation.sh Phase 1 IMU-residual three-condition comparison
+│   ├── run_kaist_evaluation.sh  KAIST Complex Urban evaluation runner
+│   ├── run_timing_all.sh        per-component latency sweep (all conditions)
+│   ├── run_timing_test.sh       single-scenario timing test
+│   ├── run_timing_subcomp.sh    sub-component breakdown (verbosity:=ALL)
+│   ├── run_timing_basecfg.sh    city timing with 600-feat base config
+│   ├── parse_timing.py          timing log parser → latency table
+│   ├── make_paper_timing_table.py  aggregates timing folders → paper tables + LaTeX
+│   ├── run_zedx_live.sh         live pipeline for ZED X stereo camera
 │   ├── debug_run.sh             interactive single-run with RViz
 │   └── debug_kaist_bag.sh       KAIST bag playback monitor
 ├── analysis/
@@ -152,6 +160,71 @@ python3 dov_postprocessor.py --folder masked-parking_lot-high
 # Cross-batch ablation comparison
 python3 analyze_ablation_batches.py
 ```
+
+### Timing analysis
+
+Measures per-component latency by replaying a bag and parsing timestamped log output.
+
+```bash
+# Single scenario (choose any env / density / mask mode)
+./scripts/run_timing_test.sh parking_lot high yolo
+
+# Full sweep — 3 conditions × 3 environments × 4 densities = 36 runs
+./scripts/run_timing_all.sh all
+
+# Sub-component breakdown (verbosity:=ALL, parking_lot only, ~7 min)
+./scripts/run_timing_subcomp.sh
+
+# City environments with 600-feature base config (real-time baseline)
+./scripts/run_timing_basecfg.sh
+
+# Aggregate all three folders into paper tables + LaTeX
+python3 scripts/make_paper_timing_table.py \
+    --sweep   timings/<sweep_folder> \
+    --subcomp timings/<subcomp_folder> \
+    --basecfg timings/<basecfg_folder> \
+    --latex
+```
+
+Each run saves logs to `timings/<label>_TIMESTAMP/`. The `parse_timing.py` script
+is called automatically at the end of every timing script and prints a latency table.
+Frozen workstation numbers are in `timings/20260819_130134/` (main sweep),
+`timings/subcomp_20260820_125408/` (sub-components), and
+`timings/basecfg_20260820_121652/` (city base config).
+
+### ZEDX live experiments
+
+For on-robot experiments with a ZED X stereo camera (no bag replay):
+
+```bash
+# Minimal — pipeline only, no RViz, no logging
+./scripts/run_zedx_live.sh
+
+# With RViz visualization
+./scripts/run_zedx_live.sh --rviz
+
+# With timing logs saved to timings/zedx_TIMESTAMP/
+./scripts/run_zedx_live.sh --timing
+
+# Both
+./scripts/run_zedx_live.sh --rviz --timing
+```
+
+Press **Ctrl+C** to stop all nodes cleanly. With `--timing`, a latency table is
+printed on exit and logs are saved to `timings/zedx_TIMESTAMP/`.
+
+**Before first use**, edit the `TODO: ZEDX` block at the top of the script:
+
+1. Install the [ZED ROS2 wrapper](https://github.com/stereolabs/zed-ros2-wrapper)
+2. Confirm the camera namespace and topic names (defaults match ZED SDK v4)
+3. Create `src/open_vins/config/zedx_config/estimator_config_zedx.yaml`
+   and `kalibr_imucam_chain_zedx.yaml` with ZEDX intrinsics / extrinsics
+4. Uncomment the `ros2 launch zed_wrapper zedx.launch.py` line in the script
+5. Start the ZED wrapper (or let the script launch it), then run the script above
+
+The pipeline uses the same VIODE internal topic convention (`/cam0/image_raw`,
+`/cam1/image_raw`) — only the YOLO masker remaps its subscriptions to the ZED topics,
+so all other nodes remain unchanged.
 
 ---
 
