@@ -85,11 +85,13 @@ done
 
 VERBOSITY="INFO"
 TIMING_DIR=""
+TIMING_LOG=""
 if $USE_TIMING; then
     TIMING_DIR="$WS_DIR/timings/zedx_$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$TIMING_DIR"
+    TIMING_LOG="$TIMING_DIR/combined.log"
     VERBOSITY="ALL"
-    echo "[run_zedx_live] Timing logs → $TIMING_DIR"
+    echo "[run_zedx_live] Timing logs → $TIMING_LOG"
 fi
 
 mkdir -p "$OUTPUT_DIR"
@@ -103,11 +105,11 @@ cleanup() {
     done
     wait 2>/dev/null || true
 
-    if $USE_TIMING && [[ -n "$TIMING_DIR" ]]; then
+    if $USE_TIMING && [[ -f "$TIMING_LOG" ]]; then
         echo ""
         echo "[run_zedx_live] Parsing timing logs..."
-        python3 "$SCRIPT_DIR/parse_timing.py" "$TIMING_DIR" 2>/dev/null || \
-            echo "[run_zedx_live] parse_timing.py not found — check $TIMING_DIR manually"
+        python3 "$SCRIPT_DIR/parse_timing.py" "$TIMING_LOG" --label "ZED X live" || \
+            echo "[run_zedx_live] parse_timing.py failed — raw log: $TIMING_LOG"
     fi
 
     echo "[run_zedx_live] Done."
@@ -134,17 +136,22 @@ trap cleanup SIGINT SIGTERM EXIT
 # ────────────────────────────────────────────────────────────────────────────
 if $USE_MASK; then
     echo "[run_zedx_live] Starting YOLO masker (device: $YOLO_DEVICE)..."
-    ros2 run yolo_masker yolo_masker \
-        --ros-args \
-        -r /cam0/image_raw:="$ZED_LEFT_TOPIC" \
-        -r /cam1/image_raw:="$ZED_RIGHT_TOPIC" \
-        -p model_path:="$MODEL_PATH" \
-        -p confidence_threshold:="$CONF_THRESHOLD" \
-        -p max_mask_fraction:="$MAX_MASK_FRACTION" \
-        -p dilation_kernel:="$DILATION_KERNEL" \
-        -p use_flow_classifier:="$USE_FLOW_CLASSIFIER" \
-        -p device:="$YOLO_DEVICE" \
-        -p force_empty:=false &
+    _yolo_cmd=(ros2 run yolo_masker yolo_masker
+        --ros-args
+        -r /cam0/image_raw:="$ZED_LEFT_TOPIC"
+        -r /cam1/image_raw:="$ZED_RIGHT_TOPIC"
+        -p model_path:="$MODEL_PATH"
+        -p confidence_threshold:="$CONF_THRESHOLD"
+        -p max_mask_fraction:="$MAX_MASK_FRACTION"
+        -p dilation_kernel:="$DILATION_KERNEL"
+        -p use_flow_classifier:="$USE_FLOW_CLASSIFIER"
+        -p device:="$YOLO_DEVICE"
+        -p force_empty:=false)
+    if $USE_TIMING; then
+        "${_yolo_cmd[@]}" 2>&1 | tee -a "$TIMING_LOG" &
+    else
+        "${_yolo_cmd[@]}" &
+    fi
     PIDS+=($!)
 
     echo "[run_zedx_live] Waiting for YOLO masker to load model..."
@@ -172,23 +179,20 @@ fi
 #    IMU topic must match $IMU_TOPIC and kalibr_imu_chain_zedx.yaml:rostopic.
 # ────────────────────────────────────────────────────────────────────────────
 echo "[run_zedx_live] Starting OpenVINS..."
-ros2 launch ov_msckf subscribe.launch.py \
-    config_path:="$CONFIG_PATH" \
-    rviz_enable:="$USE_RVIZ" \
-    verbosity:="$VERBOSITY" &
-OV_PID=$!
-PIDS+=($OV_PID)
-
 if $USE_TIMING; then
-    # Redirect OpenVINS stdout to timing log
-    mkdir -p "$TIMING_DIR"
+    # Tee stdout+stderr to the combined timing log so parse_timing.py can read it.
+    # YOLO masker [TIMING] lines also land in the same file (see masker launch above).
     ros2 launch ov_msckf subscribe.launch.py \
         config_path:="$CONFIG_PATH" \
-        rviz_enable:=false \
-        verbosity:=ALL 2>&1 | tee "$TIMING_DIR/openvins.log" &
-    OV_TIMING_PID=$!
-    PIDS+=($OV_TIMING_PID)
+        rviz_enable:="$USE_RVIZ" \
+        verbosity:=ALL 2>&1 | tee -a "$TIMING_LOG" &
+else
+    ros2 launch ov_msckf subscribe.launch.py \
+        config_path:="$CONFIG_PATH" \
+        rviz_enable:="$USE_RVIZ" \
+        verbosity:=INFO &
 fi
+PIDS+=($!)
 
 # ────────────────────────────────────────────────────────────────────────────
 # 3. path_recorder (optional — comment out if you don't need trajectory CSV)
