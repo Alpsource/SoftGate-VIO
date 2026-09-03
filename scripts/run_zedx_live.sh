@@ -1,204 +1,218 @@
 #!/bin/bash
-# =============================================================================
-# run_zedx_live.sh — Live pipeline for ZED X stereo camera
 #
-# Starts OpenVINS + YOLO masker + HSE. Runs until Ctrl+C, then shuts down
-# all nodes cleanly. Assumes the ZED ROS2 wrapper is already running (or
-# launches it once the TODO markers below are filled in).
+# run_zedx_live.sh — SoftGate-VIO live pipeline for ZED X stereo camera
 #
 # Usage:
-#   ./scripts/run_zedx_live.sh [--rviz] [--timing]
+#   ./scripts/run_zedx_live.sh [--rviz] [--timing] [--no-mask]
 #
-#   --rviz    Open RViz with the default OpenVINS display config
-#   --timing  Save per-node logs and print a timing table on exit
+#   --rviz      Open RViz2 with the OpenVINS display config
+#   --timing    Save verbosity:=ALL logs to timings/zedx_TIMESTAMP/; print table on exit
+#   --no-mask   Run without YOLO masking (unmasked VIO baseline)
 #
-# Before first use — fill in every line marked TODO: ZEDX
-# =============================================================================
+# Requirements:
+#   1. ZED ROS2 wrapper running externally (or uncomment the launch block below)
+#   2. Xsens driver running (or use ZED X internal IMU — see kalibr_imu_chain_zedx.yaml)
+#   3. src/open_vins/config/zedx_config/ kalibr files filled with real calibration
+#
+# Hold Ctrl+C to stop all nodes cleanly.
 
-# ── Flags ─────────────────────────────────────────────────────────────────────
-ENABLE_RVIZ=false
-ENABLE_TIMING=false
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WS_DIR="$(dirname "$SCRIPT_DIR")"
+
+# ── Source workspace ────────────────────────────────────────────────────────
+source "$WS_DIR/install/setup.bash"
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║                     USER CONFIG                                         ║
+# ║  Edit these fields before the first run.                               ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# Path to estimator config (fill kalibr files in the same directory first)
+CONFIG_PATH="$WS_DIR/src/open_vins/config/zedx_config/estimator_config_zedx.yaml"
+
+# YOLO segmentation model weights
+MODEL_PATH="$WS_DIR/models/yolo26s-seg.pt"
+# Lighter alternative for Jetson Orin NX / AGX (same COCO classes, faster):
+# MODEL_PATH="$WS_DIR/models/yolo11n-seg.pt"
+
+# ── ZED X camera topics ────────────────────────────────────────────────────
+# Default: ZED ROS2 wrapper v4, namespace "zed", node_name "zed_node".
+# If you changed camera_name in zed_camera.yaml, replace "zed_node" below.
+# Use "image_rect_gray" (rectified) — no distortion needed in kalibr file.
+ZED_LEFT_TOPIC="/zed/zed_node/left/image_rect_gray"
+ZED_RIGHT_TOPIC="/zed/zed_node/right/image_rect_gray"
+
+# ── IMU topic ──────────────────────────────────────────────────────────────
+# Must match rostopic in kalibr_imu_chain_zedx.yaml.
+#   Xsens MTi (bluespace_ai or xsens_mti_ros2_driver): /imu/data
+#   ZED X internal IMU:                                 /zed/zed_node/imu/data
+IMU_TOPIC="/imu/data"
+
+# ── YOLO masker parameters ─────────────────────────────────────────────────
+CONF_THRESHOLD=0.25       # detection confidence cutoff (0.25 = VIODE/KAIST default)
+MAX_MASK_FRACTION=0.80    # if mask covers >80% of frame, publish empty mask (safety guard)
+DILATION_KERNEL=13        # mask dilation in pixels (larger = more margin around detections)
+USE_FLOW_CLASSIFIER=true  # ego-motion-compensated static/dynamic discrimination
+
+# ── YOLO device ────────────────────────────────────────────────────────────
+# "cuda" on desktop; "cuda:0" or "cuda" on Jetson; "cpu" as fallback
+YOLO_DEVICE="${YOLO_DEVICE:-cuda}"
+
+# ── Output directory for path_recorder CSV files ──────────────────────────
+OUTPUT_DIR="${HOME}/ov_results_zedx"
+
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+# ── Parse flags ────────────────────────────────────────────────────────────
+USE_RVIZ=false
+USE_TIMING=false
+USE_MASK=true
+
 for arg in "$@"; do
-    case $arg in
-        --rviz)   ENABLE_RVIZ=true ;;
-        --timing) ENABLE_TIMING=true ;;
+    case "$arg" in
+        --rviz)    USE_RVIZ=true ;;
+        --timing)  USE_TIMING=true ;;
+        --no-mask) USE_MASK=false ;;
+        *)
+            echo "Unknown argument: $arg"
+            echo "Usage: $0 [--rviz] [--timing] [--no-mask]"
+            exit 1
+            ;;
     esac
 done
 
-# ── TODO: ZEDX — edit these before running ────────────────────────────────────
-#
-# Step 1: Install ZED ROS2 wrapper
-#         https://github.com/stereolabs/zed-ros2-wrapper
-#
-# Step 2: Confirm the camera namespace ("zed" is the default for ZED X)
-ZEDX_NS="zed"                                       # TODO: ZEDX — confirm namespace
+VERBOSITY="INFO"
+TIMING_DIR=""
+if $USE_TIMING; then
+    TIMING_DIR="$WS_DIR/timings/zedx_$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$TIMING_DIR"
+    VERBOSITY="ALL"
+    echo "[run_zedx_live] Timing logs → $TIMING_DIR"
+fi
 
-# Step 3: Confirm topic names (these match zed-ros2-wrapper v4 defaults)
-ZEDX_LEFT_TOPIC="/${ZEDX_NS}/zed_node/left/image_rect_color"   # TODO: ZEDX
-ZEDX_RIGHT_TOPIC="/${ZEDX_NS}/zed_node/right/image_rect_color" # TODO: ZEDX
-ZEDX_IMU_TOPIC="/${ZEDX_NS}/zed_node/imu/data"                 # TODO: ZEDX (OpenVINS reads this from config)
+mkdir -p "$OUTPUT_DIR"
+PIDS=()
 
-# Step 4: Create the estimator config and calib YAML for ZEDX
-#         Place them in config/zedx_config/ inside the workspace
-CONFIG_PATH="/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283/openvins_ws/src/open_vins/config/zedx_config/estimator_config_zedx.yaml"  # TODO: ZEDX
-CALIB_FILE="/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283/openvins_ws/src/open_vins/config/zedx_config/kalibr_imucam_chain_zedx.yaml" # TODO: ZEDX
-
-# Step 5: Tune YOLO confidence for your environment (0.25 indoor, 0.45 city)
-YOLO_CONF=0.35                                      # TODO: ZEDX — tune for scene
-# ─────────────────────────────────────────────────────────────────────────────
-
-WORKSPACE="/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283"
-OPENVINS_WS="${WORKSPACE}/openvins_ws"
-MODEL_PATH="${OPENVINS_WS}/models/yolo26s-seg.pt"
-RVIZ_CFG="${OPENVINS_WS}/install/ov_msckf/share/ov_msckf/launch/display_ros2.rviz"
-PARSE_SCRIPT="${OPENVINS_WS}/scripts/parse_timing.py"
-
-LOG_DIR="${OPENVINS_WS}/timings/zedx_$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$LOG_DIR"
-
-KILL_LIST=(
-    "ov_msckf" "ov_softgate" "yolo_masker" "hybrid_speed_estimator"
-    "zed_node" "zed_wrapper" "zed_camera" "rviz2"
-)
-
-cleanup_nodes() {
+cleanup() {
     echo ""
-    echo "[CLEANUP] Stopping all nodes..."
-    for t in "${KILL_LIST[@]}"; do pkill -f "$t" > /dev/null 2>&1 || true; done
-    sleep 1
-    for t in "${KILL_LIST[@]}"; do pkill -9 -f "$t" > /dev/null 2>&1 || true; done
-    ros2 daemon stop  > /dev/null 2>&1 || true
-    pkill -9 -f ros2  > /dev/null 2>&1 || true
-    pkill -9 -f fastdds > /dev/null 2>&1 || true
-    rm -rf ~/.ros/ros2daemon /dev/shm/fastrtps_* /dev/shm/rtps_* 2>/dev/null || true
-    if $ENABLE_TIMING; then
-        echo "[TIMING] Parsing logs..."
-        cat "${LOG_DIR}/openvins.log" "${LOG_DIR}/yolo_masker.log" "${LOG_DIR}/hse.log" \
-            > "${LOG_DIR}/combined.log" 2>/dev/null
-        python3 "$PARSE_SCRIPT" "${LOG_DIR}/combined.log" --label "zedx-live" \
-            | tee "${LOG_DIR}/timing_table.txt"
+    echo "[run_zedx_live] Shutting down..."
+    for pid in "${PIDS[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    wait 2>/dev/null || true
+
+    if $USE_TIMING && [[ -n "$TIMING_DIR" ]]; then
         echo ""
-        echo "  Logs saved to: ${LOG_DIR}/"
+        echo "[run_zedx_live] Parsing timing logs..."
+        python3 "$SCRIPT_DIR/parse_timing.py" "$TIMING_DIR" 2>/dev/null || \
+            echo "[run_zedx_live] parse_timing.py not found — check $TIMING_DIR manually"
     fi
-    echo "[CLEANUP] Done."
+
+    echo "[run_zedx_live] Done."
 }
+trap cleanup SIGINT SIGTERM EXIT
 
-source "${OPENVINS_WS}/install/setup.bash"
-trap 'cleanup_nodes; exit 0' INT TERM
+# ────────────────────────────────────────────────────────────────────────────
+# (Optional) ZED ROS2 wrapper
+# Uncomment to let this script manage the ZED wrapper itself.
+# Make sure zed_ros2_wrapper is built and sourced before running.
+# ────────────────────────────────────────────────────────────────────────────
+# ros2 launch zed_wrapper zed_camera.launch.py \
+#     camera_model:=zedx \
+#     camera_name:=zed \
+#     node_name:=zed_node &
+# PIDS+=($!)
+# echo "[run_zedx_live] Waiting for ZED camera to initialise..."
+# sleep 6
 
-# ── Preflight ─────────────────────────────────────────────────────────────────
-if [[ ! -f "$CONFIG_PATH" ]]; then
-    echo "ERROR: config not found: $CONFIG_PATH"
-    echo "       Create estimator_config_zedx.yaml (see TODO markers at top of script)."
-    exit 1
-fi
+# ────────────────────────────────────────────────────────────────────────────
+# 1. YOLO masker
+#    Subscribes to /cam0/image_raw and /cam1/image_raw — remapped to ZED topics.
+#    Publishes /cam0/masked and /cam1/masked for OpenVINS.
+# ────────────────────────────────────────────────────────────────────────────
+if $USE_MASK; then
+    echo "[run_zedx_live] Starting YOLO masker (device: $YOLO_DEVICE)..."
+    ros2 run yolo_masker yolo_masker \
+        --ros-args \
+        -r /cam0/image_raw:="$ZED_LEFT_TOPIC" \
+        -r /cam1/image_raw:="$ZED_RIGHT_TOPIC" \
+        -p model_path:="$MODEL_PATH" \
+        -p confidence_threshold:="$CONF_THRESHOLD" \
+        -p max_mask_fraction:="$MAX_MASK_FRACTION" \
+        -p dilation_kernel:="$DILATION_KERNEL" \
+        -p use_flow_classifier:="$USE_FLOW_CLASSIFIER" \
+        -p device:="$YOLO_DEVICE" \
+        -p force_empty:=false &
+    PIDS+=($!)
 
-echo "========================================================"
-echo "  ZEDX Live Pipeline"
-echo "  Config : $(basename $CONFIG_PATH)"
-echo "  YOLO   : conf=${YOLO_CONF}, device=${YOLO_DEVICE:-cuda}"
-echo "  RViz   : $ENABLE_RVIZ"
-echo "  Timing : $ENABLE_TIMING  (logs → $LOG_DIR)"
-echo "========================================================"
-
-for t in "${KILL_LIST[@]}"; do pkill -9 -f "$t" > /dev/null 2>&1 || true; done
-sleep 2
-
-# ── 1. ZED ROS2 Wrapper ───────────────────────────────────────────────────────
-echo "[1/4] Checking for ZED camera topics..."
-#
-# TODO: ZEDX — uncomment and fix this once zed-ros2-wrapper is installed:
-#
-# ros2 launch zed_wrapper zedx.launch.py camera_model:=zedx \
-#     > "${LOG_DIR}/zed_wrapper.log" 2>&1 &
-# echo "      Waiting for ZED wrapper to initialize (~10s)..."
-# sleep 10
-#
-# For now the script expects you to start the ZED wrapper yourself first:
-echo "      Waiting for ${ZEDX_LEFT_TOPIC} (start ZED wrapper if not running)..."
-timeout 30 bash -c \
-    "until ros2 topic list 2>/dev/null | grep -q '${ZEDX_LEFT_TOPIC}'; do sleep 0.5; done" \
-    || { echo ""; echo "  [ERROR] ZED camera topic not found after 30 s."; \
-         echo "          Start 'ros2 launch zed_wrapper zedx.launch.py camera_model:=zedx' first."; \
-         exit 1; }
-echo "      ZED topics found."
-
-# ── 2. OpenVINS ───────────────────────────────────────────────────────────────
-echo "[2/4] Starting OpenVINS..."
-if $ENABLE_TIMING; then
-    OV_OUT="${LOG_DIR}/openvins.log"
+    echo "[run_zedx_live] Waiting for YOLO masker to load model..."
+    timeout 90 bash -c \
+        'until ros2 topic echo --once /yolo_masker/ready 2>/dev/null | grep -q "data: true"; do sleep 0.5; done' \
+        || echo "[run_zedx_live] [WARN] /yolo_masker/ready not seen — proceeding anyway"
+    sleep 1
 else
-    OV_OUT=/dev/null
+    # No-mask baseline: start masker in force_empty mode (publishes all-zeros masks)
+    echo "[run_zedx_live] Starting masker in force_empty mode (unmasked baseline)..."
+    ros2 run yolo_masker yolo_masker \
+        --ros-args \
+        -r /cam0/image_raw:="$ZED_LEFT_TOPIC" \
+        -r /cam1/image_raw:="$ZED_RIGHT_TOPIC" \
+        -p model_path:="$MODEL_PATH" \
+        -p force_empty:=true &
+    PIDS+=($!)
+    sleep 2
 fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2. OpenVINS MSCKF estimator
+#    Topic subscriptions come from kalibr_imucam_chain_zedx.yaml (rostopic fields).
+#    Camera topics must match $ZED_LEFT_TOPIC / $ZED_RIGHT_TOPIC set above.
+#    IMU topic must match $IMU_TOPIC and kalibr_imu_chain_zedx.yaml:rostopic.
+# ────────────────────────────────────────────────────────────────────────────
+echo "[run_zedx_live] Starting OpenVINS..."
 ros2 launch ov_msckf subscribe.launch.py \
     config_path:="$CONFIG_PATH" \
-    use_sim_time:=false \
-    > "$OV_OUT" 2>&1 &
+    rviz_enable:="$USE_RVIZ" \
+    verbosity:="$VERBOSITY" &
+OV_PID=$!
+PIDS+=($OV_PID)
 
-timeout 15 bash -c \
-    'until ros2 node list 2>/dev/null | grep -q "ov_msckf"; do sleep 0.3; done' || true
-sleep 2
-
-# ── 3. YOLO masker ────────────────────────────────────────────────────────────
-echo "[3/4] Starting YOLO masker..."
-# Topic remapping: the masker's internal subscriptions use /cam0 and /cam1.
-# We remap them to the actual ZED topic names here so nothing else changes.
-if $ENABLE_TIMING; then
-    YOLO_OUT="${LOG_DIR}/yolo_masker.log"
-else
-    YOLO_OUT=/dev/null
+if $USE_TIMING; then
+    # Redirect OpenVINS stdout to timing log
+    mkdir -p "$TIMING_DIR"
+    ros2 launch ov_msckf subscribe.launch.py \
+        config_path:="$CONFIG_PATH" \
+        rviz_enable:=false \
+        verbosity:=ALL 2>&1 | tee "$TIMING_DIR/openvins.log" &
+    OV_TIMING_PID=$!
+    PIDS+=($OV_TIMING_PID)
 fi
-ros2 run yolo_masker yolo_masker \
+
+# ────────────────────────────────────────────────────────────────────────────
+# 3. path_recorder (optional — comment out if you don't need trajectory CSV)
+#    Saves vio_path_run_1.csv and gt_path_run_1.csv to $OUTPUT_DIR.
+#    Note: gt_path_run_1.csv will be empty for live runs (no ground truth).
+# ────────────────────────────────────────────────────────────────────────────
+echo "[run_zedx_live] Starting path_recorder (output: $OUTPUT_DIR)..."
+ros2 run ov_softgate path_recorder -- 1 \
     --ros-args \
-    -p model_path:="${MODEL_PATH}" \
-    -p device:="${YOLO_DEVICE:-cuda}" \
-    -p confidence_threshold:="${YOLO_CONF}" \
-    -p dilation_kernel:=5 \
-    -p max_mask_fraction:=0.80 \
-    -p use_flow_classifier:=true \
-    -p flow_dynamic_threshold:=2.0 \
-    -p flow_min_features:=5 \
-    --remap /cam0/image_raw:="${ZEDX_LEFT_TOPIC}" \
-    --remap /cam1/image_raw:="${ZEDX_RIGHT_TOPIC}" \
-    > "$YOLO_OUT" 2>&1 &
+    -p output_dir:="$OUTPUT_DIR" &
+PIDS+=($!)
 
-echo "      Waiting for /cam0/masked (YOLO model loading ~5s)..."
-timeout 60 bash -c \
-    'until ros2 topic list 2>/dev/null | grep -q "/cam0/masked"; do sleep 0.5; done' \
-    || echo "  [WARN] /cam0/masked not seen — continuing anyway"
-sleep 2
-
-# ── 4. Hybrid speed estimator ─────────────────────────────────────────────────
-echo "[4/4] Starting hybrid_speed_estimator..."
-if $ENABLE_TIMING; then
-    HSE_OUT="${LOG_DIR}/hse.log"
-else
-    HSE_OUT=/dev/null
-fi
-ros2 run ov_softgate hybrid_speed_estimator 1 \
-    --ros-args \
-    -p mask_source:=yolo \
-    -p min_disparity:=1.2 \
-    -p min_features:=8 \
-    -p orb_nfeatures:=100 \
-    -p calib_file:="${CALIB_FILE}" \
-    -p output_dir:="${LOG_DIR}" \
-    > "$HSE_OUT" 2>&1 &
-sleep 1
-
-# ── Optional: RViz ────────────────────────────────────────────────────────────
-if $ENABLE_RVIZ; then
-    echo "[OPT] Starting RViz..."
-    rviz2 -d "$RVIZ_CFG" --ros-args --log-level warn &
-fi
+# ────────────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "========================================================"
-echo "  All nodes running. Press Ctrl+C to stop cleanly."
-if $ENABLE_TIMING; then
-    echo "  Timing logs: ${LOG_DIR}/"
-fi
-echo "========================================================"
+echo "┌──────────────────────────────────────────────────────────┐"
+echo "│  SoftGate-VIO running — press Ctrl+C to stop             │"
+echo "│                                                           │"
+printf  "│  Config:    %-46s│\n" "$(basename "$CONFIG_PATH")"
+printf  "│  Masking:   %-46s│\n" "$(if $USE_MASK; then echo "YOLO ($MODEL_PATH | conf=$CONF_THRESHOLD)"; else echo "disabled (force_empty)"; fi)"
+printf  "│  IMU:       %-46s│\n" "$IMU_TOPIC"
+printf  "│  Camera L:  %-46s│\n" "$ZED_LEFT_TOPIC"
+printf  "│  Output:    %-46s│\n" "$OUTPUT_DIR"
+echo "└──────────────────────────────────────────────────────────┘"
 echo ""
 
 wait

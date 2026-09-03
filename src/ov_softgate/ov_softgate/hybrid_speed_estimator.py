@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import message_filters
 import math
+import time
 import yaml
 import pandas as pd
 import os
@@ -107,10 +108,19 @@ class FastHybridSpeedEstimator(Node):
             with open(filepath, 'r') as file:
                 clean_lines = [line for line in file.readlines() if not line.strip().startswith('%YAML')]
                 calib = yaml.safe_load(''.join(clean_lines))
-                
+
+            def get_T_imu_cam(cam_data):
+                if 'T_imu_cam' in cam_data:
+                    return np.array(cam_data['T_imu_cam'])
+                elif 'T_cam_imu' in cam_data:
+                    return np.linalg.inv(np.array(cam_data['T_cam_imu']))
+                raise KeyError("Neither T_imu_cam nor T_cam_imu found in calibration")
+
+            T_imu_cam0 = get_T_imu_cam(calib['cam0'])
+            T_imu_cam1 = get_T_imu_cam(calib['cam1'])
             self.fx, self.fy, self.cx, self.cy = calib['cam0']['intrinsics']
-            self.baseline = abs(calib['cam1']['T_imu_cam'][1][3] - calib['cam0']['T_imu_cam'][1][3])
-            self.T_imu_cam0 = np.array(calib['cam0']['T_imu_cam'])
+            self.baseline = abs(T_imu_cam1[1][3] - T_imu_cam0[1][3])
+            self.T_imu_cam0 = T_imu_cam0
         except Exception as e:
             self.get_logger().error(f"Failed to load calibration: {e}")
             raise e
@@ -200,6 +210,7 @@ class FastHybridSpeedEstimator(Node):
         return results
 
     def sync_callback(self, img0_msg, seg0_msg, img1_msg, seg1_msg):
+        _t0 = time.perf_counter()
         try:
             img0_bgr = self.bridge.imgmsg_to_cv2(img0_msg, desired_encoding='bgr8')
             img0_gray = cv2.cvtColor(img0_bgr, cv2.COLOR_BGR2GRAY)
@@ -395,6 +406,8 @@ class FastHybridSpeedEstimator(Node):
 
         except Exception as e:
             self.get_logger().error(f"Error: {e}")
+        _dt = (time.perf_counter() - _t0) * 1000.0
+        self.get_logger().info(f'[TIMING][hse] callback_ms={_dt:.1f}')
 
     def save_csv_data(self):
         if not self.record_csv or not self.csv_data:

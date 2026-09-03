@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-WORKSPACE="/path/to/your/workspace"   # ← set this to your data root
+WORKSPACE="/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283"
 OPENVINS_WS="${WORKSPACE}/openvins_ws"
 KAIST_DIR="${WORKSPACE}/Downloads_Ext/KAIST Urban"
 OV_LOG="/tmp/ov_log_kaist_debug.txt"

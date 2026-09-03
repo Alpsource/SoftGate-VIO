@@ -45,6 +45,7 @@ pair is replaced — YOLO always processes the newest available frame.
 """
 
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -293,6 +294,8 @@ class YoloMasker(Node):
         Falls back to all-zeros while the cache is empty (startup / force_empty).
         Signals the background YOLO thread with the newest stereo pair.
         """
+        _t0 = time.perf_counter()
+
         h, w = msg0.height, msg0.width
         empty = np.zeros((h, w), dtype=np.uint8)
 
@@ -315,6 +318,9 @@ class YoloMasker(Node):
         with self._latest_lock:
             self._latest_pair = (msg0, msg1)
         self._new_pair_event.set()
+
+        _dt = (time.perf_counter() - _t0) * 1000.0
+        self.get_logger().info(f'[TIMING][yolo_cb] publish_ms={_dt:.2f}')
 
     # ── YOLO background thread ────────────────────────────────────────────────
 
@@ -353,7 +359,10 @@ class YoloMasker(Node):
             else:
                 # Single batched YOLO inference for both cameras, then update cache
                 # atomically so _stereo_cb always sees a consistent stereo pair.
+                _t0 = time.perf_counter()
                 result0, result1 = self._build_masks_stereo(bgr0, bgr1)
+                _dt = (time.perf_counter() - _t0) * 1000.0
+                self.get_logger().info(f'[TIMING][yolo] inference_ms={_dt:.1f}')
                 with self._cache_lock:
                     if result0 is not None:
                         self._cache0 = result0

@@ -192,39 +192,155 @@ Frozen workstation numbers are in `timings/20260819_130134/` (main sweep),
 `timings/subcomp_20260820_125408/` (sub-components), and
 `timings/basecfg_20260820_121652/` (city base config).
 
-### ZEDX live experiments
+### ZED X live experiments
 
 For on-robot experiments with a ZED X stereo camera (no bag replay):
 
 ```bash
-# Minimal — pipeline only, no RViz, no logging
+# Full pipeline (YOLO masking + VIO + path recorder)
 ./scripts/run_zedx_live.sh
 
 # With RViz visualization
 ./scripts/run_zedx_live.sh --rviz
 
+# Unmasked VIO baseline (force_empty — for comparison)
+./scripts/run_zedx_live.sh --no-mask
+
 # With timing logs saved to timings/zedx_TIMESTAMP/
 ./scripts/run_zedx_live.sh --timing
-
-# Both
-./scripts/run_zedx_live.sh --rviz --timing
 ```
 
-Press **Ctrl+C** to stop all nodes cleanly. With `--timing`, a latency table is
-printed on exit and logs are saved to `timings/zedx_TIMESTAMP/`.
+Press **Ctrl+C** to stop all nodes. Trajectory CSV files are saved to `~/ov_results_zedx/`.
 
-**Before first use**, edit the `TODO: ZEDX` block at the top of the script:
+**Before first use — edit the USER CONFIG block at the top of `scripts/run_zedx_live.sh`:**
 
-1. Install the [ZED ROS2 wrapper](https://github.com/stereolabs/zed-ros2-wrapper)
-2. Confirm the camera namespace and topic names (defaults match ZED SDK v4)
-3. Create `src/open_vins/config/zedx_config/estimator_config_zedx.yaml`
-   and `kalibr_imucam_chain_zedx.yaml` with ZEDX intrinsics / extrinsics
-4. Uncomment the `ros2 launch zed_wrapper zedx.launch.py` line in the script
-5. Start the ZED wrapper (or let the script launch it), then run the script above
+| Variable | What to set |
+|---|---|
+| `CONFIG_PATH` | Path to `estimator_config_zedx.yaml` (default: `src/open_vins/config/zedx_config/`) |
+| `MODEL_PATH` | Path to YOLO weights (default: `models/yolo26s-seg.pt`; use `yolo11n-seg.pt` on low-memory Jetson) |
+| `ZED_LEFT_TOPIC` / `ZED_RIGHT_TOPIC` | ZED ROS2 wrapper image topics — check with `ros2 topic list` |
+| `IMU_TOPIC` | `/imu/data` for Xsens MTi; `/zed/zed_node/imu/data` for ZED X internal IMU |
+| `OUTPUT_DIR` | Where `vio_path_run_1.csv` is saved |
 
-The pipeline uses the same VIODE internal topic convention (`/cam0/image_raw`,
-`/cam1/image_raw`) — only the YOLO masker remaps its subscriptions to the ZED topics,
-so all other nodes remain unchanged.
+**Before first use — fill the three kalibr template files in `src/open_vins/config/zedx_config/`:**
+
+| File | What to fill |
+|---|---|
+| `kalibr_imucam_chain_zedx.yaml` | Camera intrinsics, `T_imu_cam`, `rostopic` for each camera |
+| `kalibr_imu_chain_zedx.yaml` | IMU noise params, `rostopic`, `update_rate` |
+| `estimator_config_zedx.yaml` | `track_frequency` to match ZED framerate; everything else is ready |
+
+Get intrinsics from your Kalibr calibration output or directly from the ZED SDK (`getCameraInformation().camera_configuration.calibration_parameters`). For rectified images (`image_rect_gray`) set `distortion_coeffs: [0,0,0,0]`.
+
+**Note on ZED wrapper:** the script expects the ZED ROS2 wrapper to be already running. To have the script launch it, uncomment the `ros2 launch zed_wrapper zed_camera.launch.py` block near the top of the script.
+
+---
+
+## Jetson Deployment (ZED X + Xsens)
+
+Tested on JetPack 5.x / 6.x (Ubuntu 20.04 / 22.04) with Jetson AGX Orin or Orin NX.
+
+### 1 — System prerequisites
+
+```bash
+# ROS2 Humble (skip if already installed)
+sudo apt install ros-humble-desktop ros-humble-rmw-cyclonedds-cpp
+echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
+
+# Python deps for YOLO masker
+pip3 install ultralytics
+
+# Build deps for ROS packages
+sudo apt install python3-colcon-common-extensions python3-vcstool
+```
+
+### 2 — ZED ROS2 wrapper
+
+Install ZED SDK for Jetson from [Stereolabs downloads](https://www.stereolabs.com/developers/release/),
+then build the ROS2 wrapper:
+
+```bash
+mkdir -p ~/zed_ws/src && cd ~/zed_ws/src
+git clone --recursive https://github.com/stereolabs/zed-ros2-wrapper.git
+cd ..
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --cmake-args=-DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+```
+
+### 3 — Xsens MTi driver (skip if using ZED X internal IMU)
+
+```bash
+mkdir -p ~/xsens_ws/src && cd ~/xsens_ws/src
+git clone https://github.com/bluespace-ai/bluespace_ai_xsens_ros_mti_driver.git
+cd ..
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install
+```
+
+Launch: `ros2 launch bluespace_ai_xsens_ros_mti_driver xsens_mti_node.launch.py`
+Default IMU topic: `/imu/data` at 100 Hz.
+
+### 4 — Clone and build this repo
+
+```bash
+git clone https://github.com/Alpsource/SoftGate-VIO.git
+cd SoftGate-VIO
+
+# Pull the OpenVINS fork (SoftGate nm lives there)
+vcs import src < .repos
+
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+```
+
+### 5 — Add your calibration files
+
+Copy your Kalibr output into `src/open_vins/config/zedx_config/` and fill in the
+three template files (see TODO comments inside each):
+
+```
+src/open_vins/config/zedx_config/
+├── estimator_config_zedx.yaml          ← set track_frequency to match ZED framerate
+├── kalibr_imucam_chain_zedx.yaml       ← intrinsics + T_imu_cam + rostopic per camera
+└── kalibr_imu_chain_zedx.yaml          ← noise params + rostopic + update_rate
+```
+
+### 6 — Run
+
+Terminal 1 — ZED wrapper:
+```bash
+source ~/zed_ws/install/setup.bash
+ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedx
+```
+
+Terminal 2 — Xsens (skip if using ZED X internal IMU):
+```bash
+source ~/xsens_ws/install/setup.bash
+ros2 launch bluespace_ai_xsens_ros_mti_driver xsens_mti_node.launch.py
+```
+
+Terminal 3 — SoftGate-VIO:
+```bash
+cd SoftGate-VIO
+source install/setup.bash
+./scripts/run_zedx_live.sh
+```
+
+Optional with RViz: `./scripts/run_zedx_live.sh --rviz`
+
+The trajectory is saved to `~/ov_results_zedx/vio_path_run_1.csv` when you press Ctrl+C.
+
+### Jetson performance notes
+
+| Model | GPU inference | Recommendation |
+|---|---|---|
+| `yolo26s-seg.pt` (23 MB) | ~30 ms on Orin NX | Good for 30 Hz ZED framerate |
+| `yolo11n-seg.pt` (5.9 MB) | ~12 ms on Orin NX | Use if VIO is CPU-bound |
+| `yolo11s-seg.pt` (20 MB) | ~25 ms on Orin NX | Alternative mid-size |
+
+Set `MODEL_PATH` in `run_zedx_live.sh` to switch models without rebuilding.
 
 ---
 

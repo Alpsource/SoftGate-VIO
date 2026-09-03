@@ -28,6 +28,8 @@ OTP_SCRIPT="${VIODE_DATASET}/odom_to_path.py"
 CONFIG_BASE="${OPENVINS_WS}/install/ov_msckf/share/ov_msckf/config/viode_config"
 CONFIG_PLAIN="${CONFIG_BASE}/estimator_config.yaml"
 CONFIG_IMU="${CONFIG_BASE}/estimator_config_imu_residual.yaml"
+CONFIG_CITY_PLAIN="${CONFIG_BASE}/estimator_config_city.yaml"
+CONFIG_CITY_IMU="${CONFIG_BASE}/estimator_config_city_imu_residual.yaml"
 DOV_SCRIPT="${RESULTS_BASE}/dov_postprocessor.py"
 ANALYZE_SCRIPT="${RESULTS_BASE}/analyze_results_v5.py"
 VENV_PYTHON="${RESULTS_BASE}/env/bin/python3"
@@ -35,14 +37,16 @@ BATCH_ROOT="${RESULTS_BASE}/phase1_eval"
 MODEL_PATH="${OPENVINS_WS}/models/yolo26s-seg.pt"
 
 RUNS_PER_SCENARIO="${1:-10}"
+ENV_FILTER="${2:-all}"   # optional: city_day | city_night | parking_lot | all
 
 # ── YOLO parameters (identical to run_yolo_experiments.sh) ───────────────────
-DILATION_KERNEL=9
+DILATION_KERNEL=5
 MAX_MASK_FRACTION=0.80
 MIN_DISPARITY=1.2
 MIN_FEATURES=8
 ORB_NFEATURES=100
 CONF_THRESHOLD=0.25
+CONF_THRESHOLD_CITY=0.45   # higher confidence for city: reduces false-positive masking of static features
 FLOW_DYNAMIC_THRESHOLD=2.0
 FLOW_MIN_FEATURES=5
 USE_FLOW_CLASSIFIER=true
@@ -160,12 +164,20 @@ run_scenario() {
         echo ""
         echo "    ── Run ${i} / ${RUNS_PER_SCENARIO} ──────────────────"
 
-        # ── Select config based on condition ────────────────────────────────
+        # ── Select config based on condition and environment ─────────────────
         local config_path
-        if [[ "$mask_mode" == "yolo_imu" || "$mask_mode" == "imu_only" ]]; then
-            config_path="$CONFIG_IMU"    # use_imu_residual: true
+        if [[ "$dataset" == city_* ]]; then
+            if [[ "$mask_mode" == "yolo_imu" || "$mask_mode" == "imu_only" ]]; then
+                config_path="$CONFIG_CITY_IMU"
+            else
+                config_path="$CONFIG_CITY_PLAIN"
+            fi
         else
-            config_path="$CONFIG_PLAIN"  # use_imu_residual: false
+            if [[ "$mask_mode" == "yolo_imu" || "$mask_mode" == "imu_only" ]]; then
+                config_path="$CONFIG_IMU"
+            else
+                config_path="$CONFIG_PLAIN"
+            fi
         fi
 
         # ── 1. OpenVINS ─────────────────────────────────────────────────────
@@ -177,13 +189,16 @@ run_scenario() {
         sleep 2
 
         # ── 2. YOLO masker ──────────────────────────────────────────────────
+        local conf_thresh="${CONF_THRESHOLD}"
+        [[ "$dataset" == city_* ]] && conf_thresh="${CONF_THRESHOLD_CITY}"
+
         if [[ "$mask_mode" == "yolo" || "$mask_mode" == "yolo_imu" ]]; then
             # Active YOLO masking
             ros2 run yolo_masker yolo_masker \
                 --ros-args \
                 -p model_path:="${MODEL_PATH}" \
                 -p device:="${YOLO_DEVICE}" \
-                -p confidence_threshold:="${CONF_THRESHOLD}" \
+                -p confidence_threshold:="${conf_thresh}" \
                 -p dilation_kernel:="${DILATION_KERNEL}" \
                 -p max_mask_fraction:="${MAX_MASK_FRACTION}" \
                 -p use_flow_classifier:="${USE_FLOW_CLASSIFIER}" \
@@ -297,6 +312,12 @@ echo "    alpha    : ${IMU_RESIDUAL_ALPHA}"
 echo "    sigma_px : ${IMU_RESIDUAL_SIGMA_PX}  (dead-zone = 3 * up_msckf_sigma_px)"
 echo "=========================================================="
 
+# ── Apply env filter ──────────────────────────────────────────────────────────
+if [[ "$ENV_FILTER" != "all" ]]; then
+    DATASETS=("$ENV_FILTER")
+    echo "  [FILTER] Running only: ${ENV_FILTER}"
+fi
+
 # ── Run all scenarios ─────────────────────────────────────────────────────────
 for mask_mode in "${MASK_MODES[@]}"; do
     for dataset in "${DATASETS[@]}"; do
@@ -326,7 +347,7 @@ echo "  [ANALYSIS] Running analyze_results_v5.py..."
     echo ""
 } > "$ANALYSIS_LOG"
 
-for env in "parking_lot" "city_day" "city_night"; do
+for env in "${DATASETS[@]}"; do
     echo "    -> Analyzing: ${env}"
     (cd "$RESULTS_BASE" && python3 "$ANALYZE_SCRIPT" --env "$env") \
         >> "$ANALYSIS_LOG" 2>&1 \

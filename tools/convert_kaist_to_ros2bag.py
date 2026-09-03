@@ -9,9 +9,9 @@ so it avoids the version/metadata.yaml incompatibilities we hit there. It writes
 the bag directly with rosbags.rosbag2.Writer (version=8), which Humble's
 `ros2 bag play` accepts unpatched.
 
-Images are undistorted + stereo-rectified on the fly using the dataset's own
-left.yaml/right.yaml (K, D, R, P), so the OpenVINS config can use distortion=0
-and the post-rectification P-matrix intrinsics directly.
+Images are written RAW (no undistortion, no rectification) on topics
+/stereo/left/image_raw and /stereo/right/image_raw, matching the
+config/kaist/ calibration files shipped with OpenVINS.
 
 Usage:
     python3 convert_kaist_to_ros2bag.py --seq_dir "/path/to/urban39-pankyo" \
@@ -119,20 +119,6 @@ def main():
     seq_name = seq_dir.name  # e.g. "urban39-pankyo"
     out_bag = Path(args.out_bag)
 
-    calib_dir = seq_dir / f"{seq_name}_calibration" / seq_name / "calibration"
-    left_yaml = calib_dir / "left.yaml"
-    right_yaml = calib_dir / "right.yaml"
-    if not left_yaml.exists() or not right_yaml.exists():
-        raise FileNotFoundError(f"Calibration not found under {calib_dir}")
-
-    print(f"[*] Loading calibration from {calib_dir}")
-    Kl, Dl, Rl, Pl, size_l = load_cam_yaml(left_yaml)
-    Kr, Dr, Rr, Pr, size_r = load_cam_yaml(right_yaml)
-
-    print("[*] Computing rectification maps ...")
-    map_l = cv2.initUndistortRectifyMap(Kl, Dl, Rl, Pl, size_l, cv2.CV_16SC2)
-    map_r = cv2.initUndistortRectifyMap(Kr, Dr, Rr, Pr, size_r, cv2.CV_16SC2)
-
     stereo_stamp_csv = seq_dir / "sensor_data" / "stereo_stamp.csv"
     xsens_csv = seq_dir / "sensor_data" / "xsens_imu.csv"
     left_dir = seq_dir / "image" / "stereo_left"
@@ -172,8 +158,8 @@ def main():
 
     n_img, n_imu, n_skip_right = 0, 0, 0
     with Writer(out_bag, version=8) as writer:
-        conn_left = writer.add_connection("/stereo/left/image_rect", Image.__msgtype__, typestore=TYPESTORE)
-        conn_right = writer.add_connection("/stereo/right/image_rect", Image.__msgtype__, typestore=TYPESTORE)
+        conn_left = writer.add_connection("/stereo/left/image_raw", Image.__msgtype__, typestore=TYPESTORE)
+        conn_right = writer.add_connection("/stereo/right/image_raw", Image.__msgtype__, typestore=TYPESTORE)
         conn_imu = writer.add_connection("/imu0", Imu.__msgtype__, typestore=TYPESTORE)
 
         for ts in left_stamps:
@@ -192,11 +178,8 @@ def main():
                 n_skip_right += 1
                 continue
 
-            rect_l = cv2.remap(img_l, *map_l, cv2.INTER_LINEAR)
-            rect_r = cv2.remap(img_r, *map_r, cv2.INTER_LINEAR)
-
-            msg_l = make_image_msg(rect_l, ts, "cam0")
-            msg_r = make_image_msg(rect_r, ts, "cam1")
+            msg_l = make_image_msg(img_l, ts, "cam0")
+            msg_r = make_image_msg(img_r, ts, "cam1")
             writer.write(conn_left, ts, TYPESTORE.serialize_cdr(msg_l, Image.__msgtype__))
             writer.write(conn_right, ts, TYPESTORE.serialize_cdr(msg_r, Image.__msgtype__))
             n_img += 1
