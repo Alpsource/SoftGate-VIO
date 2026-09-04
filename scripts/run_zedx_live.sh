@@ -8,6 +8,7 @@
 #   --rviz      Open RViz2 with the OpenVINS display config
 #   --timing    Save verbosity:=ALL logs to timings/zedx_TIMESTAMP/; print table on exit
 #   --no-mask   Run without YOLO masking (unmasked VIO baseline)
+#   --bag       Record camera + IMU topics to a rosbag alongside the CSVs
 #
 # Requirements:
 #   1. ZED ROS2 wrapper running externally (or uncomment the launch block below)
@@ -16,10 +17,13 @@
 #
 # Hold Ctrl+C to stop all nodes cleanly.
 
-set -euo pipefail
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS_DIR="$(dirname "$SCRIPT_DIR")"
+
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///home/neurolab/alp/SoftGate-VIO/cyclonedds.xml
 
 # ── Source workspace ────────────────────────────────────────────────────────
 source "$WS_DIR/install/setup.bash"
@@ -33,7 +37,7 @@ source "$WS_DIR/install/setup.bash"
 CONFIG_PATH="$WS_DIR/src/open_vins/config/zedx_config/estimator_config_zedx.yaml"
 
 # YOLO segmentation model weights
-MODEL_PATH="$WS_DIR/models/yolo26s-seg.pt"
+MODEL_PATH="$WS_DIR/models/yolo26s-seg.engine"
 # Lighter alternative for Jetson Orin NX / AGX (same COCO classes, faster):
 # MODEL_PATH="$WS_DIR/models/yolo11n-seg.pt"
 
@@ -41,8 +45,8 @@ MODEL_PATH="$WS_DIR/models/yolo26s-seg.pt"
 # Default: ZED ROS2 wrapper v4, namespace "zed", node_name "zed_node".
 # If you changed camera_name in zed_camera.yaml, replace "zed_node" below.
 # Use "image_rect_gray" (rectified) — no distortion needed in kalibr file.
-ZED_LEFT_TOPIC="/zed/zed_node/left/image_rect_gray"
-ZED_RIGHT_TOPIC="/zed/zed_node/right/image_rect_gray"
+ZED_LEFT_TOPIC="/zed/zed_node/left/gray/raw/image"
+ZED_RIGHT_TOPIC="/zed/zed_node/right/gray/raw/image"
 
 # ── IMU topic ──────────────────────────────────────────────────────────────
 # Must match rostopic in kalibr_imu_chain_zedx.yaml.
@@ -55,6 +59,7 @@ CONF_THRESHOLD=0.25       # detection confidence cutoff (0.25 = VIODE/KAIST defa
 MAX_MASK_FRACTION=0.80    # if mask covers >80% of frame, publish empty mask (safety guard)
 DILATION_KERNEL=13        # mask dilation in pixels (larger = more margin around detections)
 USE_FLOW_CLASSIFIER=true  # ego-motion-compensated static/dynamic discrimination
+USE_CLAHE=true            # histogram equalisation before YOLO (costs ~ms/frame at 1920x1200)
 
 # ── YOLO device ────────────────────────────────────────────────────────────
 # "cuda" on desktop; "cuda:0" or "cuda" on Jetson; "cpu" as fallback
@@ -63,25 +68,40 @@ YOLO_DEVICE="${YOLO_DEVICE:-cuda}"
 # ── Output directory for path_recorder CSV files ──────────────────────────
 OUTPUT_DIR="${HOME}/ov_results_zedx"
 
+# ── Rosbag recording ───────────────────────────────────────────────────────
+RECORD_BAG=false          # override with --bag
+BAG_TOPICS=(
+    "$ZED_LEFT_TOPIC"
+    "$ZED_RIGHT_TOPIC"
+    "$IMU_TOPIC"
+    "/tf_static"
+)
+BAG_MAX_SIZE=8589934592   # split every 8 GB (~5 min at 27 MB/s)
+
 # ╚══════════════════════════════════════════════════════════════════════════╝
 
 # ── Parse flags ────────────────────────────────────────────────────────────
 USE_RVIZ=false
 USE_TIMING=false
-USE_MASK=true
+USE_MASK=true USE_CLAHE_FLAG=""
 
 for arg in "$@"; do
     case "$arg" in
         --rviz)    USE_RVIZ=true ;;
         --timing)  USE_TIMING=true ;;
         --no-mask) USE_MASK=false ;;
+        --no-clahe) USE_CLAHE_FLAG=false ;;
+        --no-flow)  USE_FLOW_CLASSIFIER=false ;;
+        --bag)      RECORD_BAG=true ;;
         *)
             echo "Unknown argument: $arg"
-            echo "Usage: $0 [--rviz] [--timing] [--no-mask]"
+            echo "Usage: $0 [--rviz] [--timing] [--no-mask] [--no-clahe] [--no-flow] [--bag]"
             exit 1
             ;;
     esac
 done
+
+[[ -n "$USE_CLAHE_FLAG" ]] && USE_CLAHE="$USE_CLAHE_FLAG"
 
 VERBOSITY="INFO"
 TIMING_DIR=""
@@ -97,19 +117,58 @@ fi
 mkdir -p "$OUTPUT_DIR"
 PIDS=()
 
+BAG_PID=""
+BAG_DIR=""
+
 cleanup() {
     echo ""
     echo "[run_zedx_live] Shutting down..."
+
+    # rosbag2 needs SIGINT to flush and write metadata.yaml. Stop it FIRST.
+    if [[ -n "$BAG_PID" ]] && kill -0 "$BAG_PID" 2>/dev/null; then
+        echo "[run_zedx_live] Closing rosbag..."
+        kill -INT "$BAG_PID" 2>/dev/null || true
+        for _ in $(seq 1 20); do
+            kill -0 "$BAG_PID" 2>/dev/null || break
+            sleep 0.5
+        done
+        kill -0 "$BAG_PID" 2>/dev/null && kill -9 "$BAG_PID" 2>/dev/null || true
+    fi
+
+    # SIGINT is the correct shutdown signal for ROS 2 nodes — SIGTERM skips
+    # rclpy's shutdown path and leaves orphans behind.
     for pid in "${PIDS[@]}"; do
-        kill "$pid" 2>/dev/null || true
+        kill -INT "$pid" 2>/dev/null || true
     done
-    wait 2>/dev/null || true
+
+    for _ in $(seq 1 16); do
+        _alive=false
+        for pid in "${PIDS[@]}"; do
+            kill -0 "$pid" 2>/dev/null && _alive=true
+        done
+        $_alive || break
+        sleep 0.5
+    done
+
+    for pid in "${PIDS[@]}"; do
+        kill -9 "$pid" 2>/dev/null || true
+    done
 
     if $USE_TIMING && [[ -f "$TIMING_LOG" ]]; then
         echo ""
         echo "[run_zedx_live] Parsing timing logs..."
         python3 "$SCRIPT_DIR/parse_timing.py" "$TIMING_LOG" --label "ZED X live" || \
             echo "[run_zedx_live] parse_timing.py failed — raw log: $TIMING_LOG"
+    fi
+
+    for name in rviz2 yolo_masker path_recorder run_subscribe_msckf zed_state_publisher; do
+        pkill -f "$name" 2>/dev/null || true
+    done
+
+    if [[ -n "$BAG_DIR" && -f "$BAG_DIR/metadata.yaml" ]]; then
+        echo "[run_zedx_live] Bag saved → $BAG_DIR"
+    elif [[ -n "$BAG_DIR" ]]; then
+        echo "[run_zedx_live] [WARN] $BAG_DIR/metadata.yaml missing — bag may be incomplete"
     fi
 
     echo "[run_zedx_live] Done."
@@ -145,6 +204,7 @@ if $USE_MASK; then
         -p max_mask_fraction:="$MAX_MASK_FRACTION"
         -p dilation_kernel:="$DILATION_KERNEL"
         -p use_flow_classifier:="$USE_FLOW_CLASSIFIER"
+        -p use_clahe:="$USE_CLAHE"
         -p device:="$YOLO_DEVICE"
         -p force_empty:=false)
     if $USE_TIMING; then
@@ -155,7 +215,7 @@ if $USE_MASK; then
     PIDS+=($!)
 
     echo "[run_zedx_live] Waiting for YOLO masker to load model..."
-    timeout 90 bash -c \
+    timeout 20 bash -c \
         'until ros2 topic echo --once /yolo_masker/ready 2>/dev/null | grep -q "data: true"; do sleep 0.5; done' \
         || echo "[run_zedx_live] [WARN] /yolo_masker/ready not seen — proceeding anyway"
     sleep 1
@@ -169,6 +229,22 @@ else
         -p model_path:="$MODEL_PATH" \
         -p force_empty:=true &
     PIDS+=($!)
+    sleep 2
+fi
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2. Rosbag recording (optional)
+#    Records exactly the topics OpenVINS consumes, so the bag can be replayed
+#    on another machine with the same estimator config.
+# ────────────────────────────────────────────────────────────────────────────
+if $RECORD_BAG; then
+    BAG_DIR="$OUTPUT_DIR/bag_zedx_$(date +%Y%m%d_%H%M%S)"
+    echo "[run_zedx_live] Recording rosbag → $BAG_DIR"
+    ros2 bag record \
+        -o "$BAG_DIR" \
+        --max-bag-size "$BAG_MAX_SIZE" \
+        "${BAG_TOPICS[@]}" &
+    BAG_PID=$!
     sleep 2
 fi
 
@@ -215,6 +291,8 @@ printf  "│  Config:    %-46s│\n" "$(basename "$CONFIG_PATH")"
 printf  "│  Masking:   %-46s│\n" "$(if $USE_MASK; then echo "YOLO ($MODEL_PATH | conf=$CONF_THRESHOLD)"; else echo "disabled (force_empty)"; fi)"
 printf  "│  IMU:       %-46s│\n" "$IMU_TOPIC"
 printf  "│  Camera L:  %-46s│\n" "$ZED_LEFT_TOPIC"
+printf  "│  Preproc:   %-46s│\n" "clahe=$USE_CLAHE flow=$USE_FLOW_CLASSIFIER"
+printf  "│  Bag:       %-46s│\n" "$(if $RECORD_BAG; then basename "$BAG_DIR"; else echo "not recording"; fi)"
 printf  "│  Output:    %-46s│\n" "$OUTPUT_DIR"
 echo "└──────────────────────────────────────────────────────────┘"
 echo ""
