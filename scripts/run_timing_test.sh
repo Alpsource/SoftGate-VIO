@@ -22,10 +22,12 @@ DATASET="${1:-parking_lot}"
 LEVEL="${2:-high}"
 MASK_MODE="${3:-yolo}"
 
-WORKSPACE="${WORKSPACE:-/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283}"
-OPENVINS_WS="${OPENVINS_WS:-${WORKSPACE}/openvins_ws}"
-VIODE_DATASET="${VIODE_DATASET:-${WORKSPACE}/Downloads_Ext/VIODE_Dataset}"
-RESULTS_BASE="${RESULTS_BASE:-${WORKSPACE}/sim_results}"
+# Derive workspace from script location — works regardless of where the repo is cloned.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OPENVINS_WS="${OPENVINS_WS:-$(dirname "$_SCRIPT_DIR")}"
+# VIODE dataset and results live outside the repo — override these two with env vars on each machine.
+VIODE_DATASET="${VIODE_DATASET:-/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283/Downloads_Ext/VIODE_Dataset}"
+RESULTS_BASE="${RESULTS_BASE:-/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283/sim_results}"
 CONFIG_BASE="${OPENVINS_WS}/install/ov_msckf/share/ov_msckf/config/viode_config"
 MODEL_PATH="${OPENVINS_WS}/models/yolo26s-seg.pt"
 OTP_SCRIPT="${VIODE_DATASET}/odom_to_path.py"
