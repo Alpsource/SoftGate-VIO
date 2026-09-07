@@ -15,10 +15,10 @@
 #   ./scripts/run_timing_subcomp.sh
 # =============================================================================
 
-WORKSPACE="/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283"
-OPENVINS_WS="${WORKSPACE}/openvins_ws"
-VIODE_DATASET="${WORKSPACE}/Downloads_Ext/VIODE_Dataset"
-RESULTS_BASE="${WORKSPACE}/sim_results"
+WORKSPACE="${WORKSPACE:-/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283}"
+OPENVINS_WS="${OPENVINS_WS:-${WORKSPACE}/openvins_ws}"
+VIODE_DATASET="${VIODE_DATASET:-${WORKSPACE}/Downloads_Ext/VIODE_Dataset}"
+RESULTS_BASE="${RESULTS_BASE:-${WORKSPACE}/sim_results}"
 CONFIG_BASE="${OPENVINS_WS}/install/ov_msckf/share/ov_msckf/config/viode_config"
 MODEL_PATH="${OPENVINS_WS}/models/yolo26s-seg.pt"
 OTP_SCRIPT="${VIODE_DATASET}/odom_to_path.py"
