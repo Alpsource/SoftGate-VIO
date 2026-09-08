@@ -100,18 +100,8 @@ echo "========================================================"
 for t in "${KILL_LIST[@]}"; do pkill -9 -f "$t" > /dev/null 2>&1 || true; done
 sleep 2
 
-# ── 1. OpenVINS ───────────────────────────────────────────────────────────────
-echo "[1/6] Starting OpenVINS..."
-ros2 launch ov_msckf subscribe.launch.py \
-    config_path:="$CONFIG_PATH" use_sim_time:=true verbosity:=ALL \
-    > "${LOG_DIR}/openvins.log" 2>&1 &
-
-timeout 15 bash -c \
-    'until ros2 node list 2>/dev/null | grep -q "ov_msckf"; do sleep 0.3; done' || true
-sleep 2
-
-# ── 2. YOLO masker ────────────────────────────────────────────────────────────
-echo "[2/6] Starting YOLO masker (mask_mode=${MASK_MODE})..."
+# ── 1. YOLO masker ────────────────────────────────────────────────────────────
+echo "[1/6] Starting YOLO masker (mask_mode=${MASK_MODE})..."
 if [[ "$MASK_MODE" == "yolo" || "$MASK_MODE" == "yolo_imu" ]]; then
     ros2 run yolo_masker yolo_masker --ros-args \
         -p model_path:="${MODEL_PATH}" \
@@ -133,11 +123,21 @@ else
         > "${LOG_DIR}/yolo_masker.log" 2>&1 &
 fi
 
-echo "  Waiting for /cam0/masked..."
+echo "  Waiting for /yolo_masker/ready (GPU model warm)..."
 timeout 60 bash -c \
-    'until ros2 topic list 2>/dev/null | grep -q "/cam0/masked"; do sleep 0.5; done' \
-    || echo "  [WARN] /cam0/masked not seen — continuing"
-sleep 5
+    'until ros2 topic echo --once /yolo_masker/ready 2>/dev/null | grep -q "data: true"; do sleep 0.5; done' \
+    || echo "  [WARN] /yolo_masker/ready not seen — continuing"
+sleep 1
+
+# ── 2. OpenVINS ───────────────────────────────────────────────────────────────
+echo "[2/6] Starting OpenVINS..."
+ros2 launch ov_msckf subscribe.launch.py \
+    config_path:="$CONFIG_PATH" use_sim_time:=true verbosity:=ALL \
+    > "${LOG_DIR}/openvins.log" 2>&1 &
+
+timeout 15 bash -c \
+    'until ros2 node list 2>/dev/null | grep -q "ov_msckf"; do sleep 0.3; done' || true
+sleep 2
 
 # ── 3. GT path converter ──────────────────────────────────────────────────────
 echo "[3/6] Starting GT path converter..."

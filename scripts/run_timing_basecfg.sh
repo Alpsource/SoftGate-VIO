@@ -87,15 +87,7 @@ run_one() {
     for t in "${KILL_LIST[@]}"; do pkill -9 -f "$t" > /dev/null 2>&1 || true; done
     sleep 2
 
-    # OpenVINS
-    ros2 launch ov_msckf subscribe.launch.py \
-        config_path:="$config_path" use_sim_time:=true verbosity:=ALL \
-        > "${log_dir}/openvins.log" 2>&1 &
-    timeout 15 bash -c \
-        'until ros2 node list 2>/dev/null | grep -q "ov_msckf"; do sleep 0.3; done' || true
-    sleep 2
-
-    # YOLO masker
+    # YOLO masker — start first so model is warm before OpenVINS subscribes
     if [[ "$mask_mode" == "yolo" || "$mask_mode" == "yolo_imu" ]]; then
         ros2 run yolo_masker yolo_masker --ros-args \
             -p model_path:="${MODEL_PATH}" \
@@ -117,9 +109,17 @@ run_one() {
             > "${log_dir}/yolo_masker.log" 2>&1 &
     fi
     timeout 60 bash -c \
-        'until ros2 topic list 2>/dev/null | grep -q "/cam0/masked"; do sleep 0.5; done' \
+        'until ros2 topic echo --once /yolo_masker/ready 2>/dev/null | grep -q "data: true"; do sleep 0.5; done' \
         > /dev/null 2>&1 || true
-    sleep 5
+    sleep 1
+
+    # OpenVINS
+    ros2 launch ov_msckf subscribe.launch.py \
+        config_path:="$config_path" use_sim_time:=true verbosity:=ALL \
+        > "${log_dir}/openvins.log" 2>&1 &
+    timeout 15 bash -c \
+        'until ros2 node list 2>/dev/null | grep -q "ov_msckf"; do sleep 0.3; done' || true
+    sleep 2
 
     # GT + TF
     python3 "$OTP_SCRIPT" \
