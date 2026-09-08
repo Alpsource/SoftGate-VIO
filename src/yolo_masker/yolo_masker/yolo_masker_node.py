@@ -224,12 +224,25 @@ class YoloMasker(Node):
         elif not self.model_path:
             self.get_logger().error("model_path parameter is empty — set it with: --ros-args -p model_path:=<path/to/yolo.pt>")
         else:
-            self.get_logger().info(f"Loading YOLO segmentation model: {self.model_path} (device={self.device})")
-            self._model = YOLO(self.model_path)
-            self._model.to(self.device)
-            # Warm up to eliminate first-frame latency spike
+            _is_engine = self.model_path.endswith('.engine')
+            self.get_logger().info(
+                f"Loading YOLO segmentation model: {self.model_path} "
+                f"(device={self.device}, backend={'TensorRT' if _is_engine else 'PyTorch'})"
+            )
+            # task= is required: a TensorRT engine carries no task metadata of its own.
+            self._model = YOLO(self.model_path, task='segment')
+            if not _is_engine:
+                self._model.to(self.device)   # not applicable to a TensorRT backend
+
+            # Warm up to eliminate first-frame latency spike.
+            # The engine is built with batch=2, so warmup must feed exactly 2 images.
             _dummy = np.zeros((480, 752, 3), dtype=np.uint8)
-            self._model(_dummy, classes=self.classes_to_mask, conf=self.confidence_threshold, verbose=False)
+            self._model(
+                [_dummy, _dummy],
+                classes=self.classes_to_mask,
+                conf=self.confidence_threshold,
+                verbose=False,
+            )
             self.get_logger().info(f"YOLO model loaded and warmed up on {self.device}.")
 
         # Start background YOLO thread before subscribing so it's ready immediately
@@ -402,8 +415,11 @@ class YoloMasker(Node):
             else:
                 valid.append(False)
 
-        if not inputs:
-            return None, None
+        # The TensorRT engine has a fixed batch size of 2. When only one camera
+        # decoded successfully, duplicate its frame to fill the batch — the extra
+        # result is discarded by the result_idx bookkeeping below.
+        if len(inputs) == 1:
+            inputs = [inputs[0], inputs[0]]
 
         all_results = self._model(
             inputs,
