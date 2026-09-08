@@ -28,7 +28,7 @@ OPENVINS_WS="${OPENVINS_WS:-$(dirname "$_SCRIPT_DIR")}"
 # VIODE dataset and results live outside the repo — override these two with env vars on each machine.
 VIODE_DATASET="${VIODE_DATASET:-/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283/Downloads_Ext/VIODE_Dataset}"
 RESULTS_BASE="${RESULTS_BASE:-/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283/sim_results}"
-CONFIG_BASE="${OPENVINS_WS}/install/ov_msckf/share/ov_msckf/config/viode_config"
+CONFIG_BASE="${OPENVINS_WS}/src/open_vins/config/viode_config"
 MODEL_PATH="${OPENVINS_WS}/models/yolo26s-seg.pt"
 OTP_SCRIPT="${VIODE_DATASET}/odom_to_path.py"
 PARSE_SCRIPT="${OPENVINS_WS}/scripts/parse_timing.py"
@@ -118,12 +118,14 @@ if [[ "$MASK_MODE" == "yolo" || "$MASK_MODE" == "yolo_imu" ]]; then
         -p use_flow_classifier:=true \
         -p flow_dynamic_threshold:=2.0 \
         -p flow_min_features:=5 \
+        -p use_clahe:=false \
         > "${LOG_DIR}/yolo_masker.log" 2>&1 &
 else
     ros2 run yolo_masker yolo_masker --ros-args \
         -p model_path:="${MODEL_PATH}" \
         -p device:="${YOLO_DEVICE:-cuda}" \
         -p force_empty:=true \
+        -p use_clahe:=false \
         > "${LOG_DIR}/yolo_masker.log" 2>&1 &
 fi
 
