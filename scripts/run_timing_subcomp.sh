@@ -20,7 +20,11 @@ OPENVINS_WS="${OPENVINS_WS:-$(dirname "$_SCRIPT_DIR")}"
 VIODE_DATASET="${VIODE_DATASET:-/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283/Downloads_Ext/VIODE_Dataset}"
 RESULTS_BASE="${RESULTS_BASE:-/media/neurolab/60a72ba2-3a9d-47d0-88e3-852b0f67f283/sim_results}"
 CONFIG_BASE="${OPENVINS_WS}/src/open_vins/config/viode_config"
-MODEL_PATH="${OPENVINS_WS}/models/yolo26s-seg.pt"
+if [[ -f "${OPENVINS_WS}/models/yolo26s-seg.engine" ]]; then
+    MODEL_PATH="${OPENVINS_WS}/models/yolo26s-seg.engine"
+else
+    MODEL_PATH="${OPENVINS_WS}/models/yolo26s-seg.pt"
+fi
 OTP_SCRIPT="${VIODE_DATASET}/odom_to_path.py"
 PARSE_SCRIPT="${OPENVINS_WS}/scripts/parse_timing.py"
 
