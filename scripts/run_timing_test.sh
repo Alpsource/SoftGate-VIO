@@ -99,7 +99,7 @@ sleep 2
 # ── 1. OpenVINS ───────────────────────────────────────────────────────────────
 echo "[1/6] Starting OpenVINS..."
 ros2 launch ov_msckf subscribe.launch.py \
-    config_path:="$CONFIG_PATH" use_sim_time:=true \
+    config_path:="$CONFIG_PATH" use_sim_time:=true verbosity:=ALL \
     > "${LOG_DIR}/openvins.log" 2>&1 &
 
 timeout 15 bash -c \
