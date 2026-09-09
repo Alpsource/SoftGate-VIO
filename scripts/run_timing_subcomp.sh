@@ -115,7 +115,7 @@ run_one() {
 
     # OpenVINS — verbosity:=ALL passed explicitly to override launch default of INFO
     ros2 launch ov_msckf subscribe.launch.py \
-        config_path:="$config_path" verbosity:=ALL \
+        config_path:="$config_path" use_sim_time:=true verbosity:=ALL \
         > "${log_dir}/openvins.log" 2>&1 &
     timeout 15 bash -c \
         'until ros2 node list 2>/dev/null | grep -q "ov_msckf"; do sleep 0.3; done' || true
