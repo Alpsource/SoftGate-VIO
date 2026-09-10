@@ -6,9 +6,16 @@
 #   ./scripts/run_zedx_live.sh [--rviz] [--timing] [--no-mask]
 #
 #   --rviz      Open RViz2 with the OpenVINS display config
-#   --timing    Save verbosity:=ALL logs to timings/zedx_TIMESTAMP/; print table on exit
+#   --timing    Record verbosity:=ALL logs into the run folder; print table on exit
 #   --no-mask   Run without YOLO masking (unmasked VIO baseline)
-#   --bag       Record camera + IMU topics to a rosbag alongside the CSVs
+#   --bag       Record camera + IMU topics to a rosbag inside the run folder
+#
+# Each run gets its own folder, so nothing is overwritten between runs:
+#   ~/ov_results_zedx/zedx_<TIMESTAMP>/
+#       vio_path_run_1.csv   trajectory        (always)
+#       gt_path_run_1.csv    empty for live runs (no ground truth)
+#       bag/                 rosbag            (--bag)
+#       combined.log         timing log        (--timing)
 #
 # Requirements:
 #   1. ZED ROS2 wrapper running externally (or uncomment the launch block below)
@@ -65,7 +72,9 @@ USE_CLAHE=true            # histogram equalisation before YOLO (costs ~ms/frame 
 # "cuda" on desktop; "cuda:0" or "cuda" on Jetson; "cpu" as fallback
 YOLO_DEVICE="${YOLO_DEVICE:-cuda}"
 
-# ── Output directory for path_recorder CSV files ──────────────────────────
+# ── Parent directory for run folders ──────────────────────────────────────
+# Each run creates $OUTPUT_DIR/zedx_<TIMESTAMP>/ holding that run's CSV,
+# rosbag and timing log.
 OUTPUT_DIR="${HOME}/ov_results_zedx"
 
 # ── Rosbag recording ───────────────────────────────────────────────────────
@@ -103,18 +112,21 @@ done
 
 [[ -n "$USE_CLAHE_FLAG" ]] && USE_CLAHE="$USE_CLAHE_FLAG"
 
+# ── Per-run output folder ──────────────────────────────────────────────────
+# One folder per experiment keeps that run's trajectory CSV, rosbag and timing
+# log together, and stops each run from overwriting the previous one.
+RUN_DIR="$OUTPUT_DIR/zedx_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$RUN_DIR"
+echo "[run_zedx_live] Run folder → $RUN_DIR"
+
 VERBOSITY="INFO"
-TIMING_DIR=""
 TIMING_LOG=""
 if $USE_TIMING; then
-    TIMING_DIR="$WS_DIR/timings/zedx_$(date +%Y%m%d_%H%M%S)"
-    mkdir -p "$TIMING_DIR"
-    TIMING_LOG="$TIMING_DIR/combined.log"
+    TIMING_LOG="$RUN_DIR/combined.log"
     VERBOSITY="ALL"
     echo "[run_zedx_live] Timing logs → $TIMING_LOG"
 fi
 
-mkdir -p "$OUTPUT_DIR"
 PIDS=()
 
 BAG_PID=""
@@ -171,6 +183,7 @@ cleanup() {
         echo "[run_zedx_live] [WARN] $BAG_DIR/metadata.yaml missing — bag may be incomplete"
     fi
 
+    echo "[run_zedx_live] Run folder → $RUN_DIR"
     echo "[run_zedx_live] Done."
 }
 trap cleanup SIGINT SIGTERM EXIT
@@ -238,7 +251,8 @@ fi
 #    on another machine with the same estimator config.
 # ────────────────────────────────────────────────────────────────────────────
 if $RECORD_BAG; then
-    BAG_DIR="$OUTPUT_DIR/bag_zedx_$(date +%Y%m%d_%H%M%S)"
+    # rosbag2 creates this itself and refuses to start if it already exists.
+    BAG_DIR="$RUN_DIR/bag"
     echo "[run_zedx_live] Recording rosbag → $BAG_DIR"
     ros2 bag record \
         -o "$BAG_DIR" \
@@ -272,13 +286,13 @@ PIDS+=($!)
 
 # ────────────────────────────────────────────────────────────────────────────
 # 3. path_recorder (optional — comment out if you don't need trajectory CSV)
-#    Saves vio_path_run_1.csv and gt_path_run_1.csv to $OUTPUT_DIR.
+#    Saves vio_path_run_1.csv and gt_path_run_1.csv into $RUN_DIR.
 #    Note: gt_path_run_1.csv will be empty for live runs (no ground truth).
 # ────────────────────────────────────────────────────────────────────────────
-echo "[run_zedx_live] Starting path_recorder (output: $OUTPUT_DIR)..."
+echo "[run_zedx_live] Starting path_recorder (output: $RUN_DIR)..."
 ros2 run ov_softgate path_recorder -- 1 \
     --ros-args \
-    -p output_dir:="$OUTPUT_DIR" &
+    -p output_dir:="$RUN_DIR" &
 PIDS+=($!)
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -292,8 +306,8 @@ printf  "│  Masking:   %-46s│\n" "$(if $USE_MASK; then echo "YOLO ($MODEL_PA
 printf  "│  IMU:       %-46s│\n" "$IMU_TOPIC"
 printf  "│  Camera L:  %-46s│\n" "$ZED_LEFT_TOPIC"
 printf  "│  Preproc:   %-46s│\n" "clahe=$USE_CLAHE flow=$USE_FLOW_CLASSIFIER"
-printf  "│  Bag:       %-46s│\n" "$(if $RECORD_BAG; then basename "$BAG_DIR"; else echo "not recording"; fi)"
-printf  "│  Output:    %-46s│\n" "$OUTPUT_DIR"
+printf  "│  Bag:       %-46s│\n" "$(if $RECORD_BAG; then echo "bag/"; else echo "not recording"; fi)"
+printf  "│  Output:    %-46s│\n" "$(basename "$RUN_DIR")"
 echo "└──────────────────────────────────────────────────────────┘"
 echo ""
 

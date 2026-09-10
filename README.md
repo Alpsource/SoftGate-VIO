@@ -29,6 +29,7 @@ SoftGate-VIO/
 │   ├── parse_timing.py          timing log parser → latency table
 │   ├── make_paper_timing_table.py  aggregates timing folders → paper tables + LaTeX
 │   ├── run_zedx_live.sh         live pipeline for ZED X stereo camera
+│   ├── analyze_zedx_run.py      ZED X run report (trajectory plot + timing)
 │   ├── debug_run.sh             interactive single-run with RViz
 │   └── debug_kaist_bag.sh       KAIST bag playback monitor
 ├── analysis/
@@ -206,11 +207,56 @@ For on-robot experiments with a ZED X stereo camera (no bag replay):
 # Unmasked VIO baseline (force_empty — for comparison)
 ./scripts/run_zedx_live.sh --no-mask
 
-# With timing logs saved to timings/zedx_TIMESTAMP/
+# With timing logs saved into the run folder
 ./scripts/run_zedx_live.sh --timing
 ```
 
-Press **Ctrl+C** to stop all nodes. Trajectory CSV files are saved to `~/ov_results_zedx/`.
+Press **Ctrl+C** to stop all nodes. Each run writes its own folder under
+`~/ov_results_zedx/`, so nothing is overwritten between runs:
+
+```
+~/ov_results_zedx/zedx_<TIMESTAMP>/
+├── vio_path_run_1.csv   trajectory          (always)
+├── gt_path_run_1.csv    empty for live runs (no ground truth)
+├── bag/                 rosbag              (--bag)
+└── combined.log         timing log          (--timing)
+```
+
+#### Analysing a run
+
+`scripts/analyze_zedx_run.py` reads one run folder and reports the trajectory,
+motion statistics, and — when the run was recorded with `--timing` — the same
+latency table `parse_timing.py` prints. It reuses that parser, so any pattern
+added there shows up here too.
+
+```bash
+# Newest run under ~/ov_results_zedx, picked automatically
+python3 scripts/analyze_zedx_run.py
+
+# A specific run
+python3 scripts/analyze_zedx_run.py ~/ov_results_zedx/zedx_20260910_143022
+
+# Write the report elsewhere, without opening a window
+python3 scripts/analyze_zedx_run.py --out ~/reports --no-show
+```
+
+| Option | Effect |
+|---|---|
+| *(positional)* | Run folder to analyse. Omit to use the newest one. |
+| `--results-dir` | Where run folders live (default: `~/ov_results_zedx`) |
+| `--out` | Where to write the report (default: the run folder itself) |
+| `--no-show` | Save without opening a plot window |
+
+It writes two files into the run folder:
+
+| File | Contents |
+|---|---|
+| `trajectory.png` | Top-down path, height vs time, speed vs time, and mean latency per component against the 50 ms frame budget |
+| `analysis.txt` | Pose count, duration, pose rate, 3D/XY path length, start→end displacement, mean/max speed, vertical drift |
+
+Components the live pipeline does not run (`hybrid_speed_estimator`) show as `–`
+in the table. Over SSH there is no display, so the plot is saved rather than
+shown — copy the PNG off the Jetson to view it.
 
 **Before first use — edit the USER CONFIG block at the top of `scripts/run_zedx_live.sh`:**
 
@@ -220,7 +266,7 @@ Press **Ctrl+C** to stop all nodes. Trajectory CSV files are saved to `~/ov_resu
 | `MODEL_PATH` | Path to YOLO weights (default: `models/yolo26s-seg.pt`; use `yolo11n-seg.pt` on low-memory Jetson) |
 | `ZED_LEFT_TOPIC` / `ZED_RIGHT_TOPIC` | ZED ROS2 wrapper image topics — check with `ros2 topic list` |
 | `IMU_TOPIC` | `/imu/data` for Xsens MTi; `/zed/zed_node/imu/data` for ZED X internal IMU |
-| `OUTPUT_DIR` | Where `vio_path_run_1.csv` is saved |
+| `OUTPUT_DIR` | Parent directory for run folders (each run creates `zedx_<TIMESTAMP>/` inside it) |
 
 **Before first use — fill the three kalibr template files in `src/open_vins/config/zedx_config/`:**
 
@@ -330,7 +376,8 @@ source install/setup.bash
 
 Optional with RViz: `./scripts/run_zedx_live.sh --rviz`
 
-The trajectory is saved to `~/ov_results_zedx/vio_path_run_1.csv` when you press Ctrl+C.
+The trajectory is saved to `~/ov_results_zedx/zedx_<TIMESTAMP>/vio_path_run_1.csv` when you
+press Ctrl+C, alongside the rosbag (`--bag`) and timing log (`--timing`) for that same run.
 
 ### Jetson performance notes
 
