@@ -181,7 +181,7 @@ sleep 1
 echo "[6/6] Playing bag: $(basename $BAG_PATH)"
 echo "      (watching for [TIMING] output...)"
 echo ""
-ros2 bag play "$BAG_PATH" --clock --read-ahead-queue-size 10000
+ros2 bag play "$BAG_PATH" --clock
 echo ""
 echo "Bag finished."
 

@@ -150,7 +150,7 @@ run_one() {
     sleep 1
 
     # Play bag
-    ros2 bag play "$bag_path" --clock --read-ahead-queue-size 10000 > /dev/null 2>&1
+    ros2 bag play "$bag_path" --clock > /dev/null 2>&1
     sleep 2
     cleanup_nodes
 
