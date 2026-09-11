@@ -327,6 +327,39 @@ colcon build --symlink-install
 Launch: `ros2 launch bluespace_ai_xsens_ros_mti_driver xsens_mti_node.launch.py`
 Default IMU topic: `/imu/data` at 100 Hz.
 
+### 3b — Driver settings the live pipeline depends on
+
+These live in the sensor drivers' configs, outside this repo, and each one was
+found the hard way. Without them OpenVINS runs fine while stationary and
+diverges within seconds of walking (height falls continuously, speed explodes).
+
+**Xsens driver** — keep the IMU at its native 100 Hz with hardware timestamps:
+
+```yaml
+time_option: 1                           # SampleTimeFine from the MTi, not host arrival time
+enable_high_rate: false                  # 1 kHz HR mode arrives in USB bursts -> 29% of samples get a wrong dt
+interpolate_orientation_high_rate: false
+```
+
+**ZED wrapper** — nothing here consumes depth, and its neural network shares the
+GPU with the YOLO TensorRT engine (measured −35 ms per YOLO frame):
+
+```yaml
+depth:
+    depth_mode: 'NONE'
+```
+
+**Scheduler** — OpenVINS subscribes to the IMU with a best-effort queue only
+5 messages (50 ms) deep. Any stall longer than that silently drops IMU samples.
+`run_zedx_live.sh` pins OpenVINS to cores away from the sensor drivers and
+raises it to `SCHED_FIFO` (`OV_CORES`, `OV_RTPRIO` in its USER CONFIG). That
+needs sudo once per run, or permanently:
+
+```
+# /etc/security/limits.conf, then log in again
+neurolab  -  rtprio  99
+```
+
 ### 4 — Clone and build this repo
 
 ```bash

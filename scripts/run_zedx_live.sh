@@ -22,6 +22,9 @@
 #   2. Xsens driver running (or use ZED X internal IMU — see kalibr_imu_chain_zedx.yaml)
 #   3. src/open_vins/config/zedx_config/ kalibr files filled with real calibration
 #
+# For real walks run WITHOUT --timing: verbosity:=ALL through tee is extra load on
+# the OpenVINS process, and the IMU queue is only 50 ms deep (see OV_RTPRIO below).
+#
 # Hold Ctrl+C to stop all nodes cleanly.
 
 set -eo pipefail
@@ -72,6 +75,19 @@ USE_CLAHE=true            # histogram equalisation before YOLO (costs ~ms/frame 
 # "cuda" on desktop; "cuda:0" or "cuda" on Jetson; "cpu" as fallback
 YOLO_DEVICE="${YOLO_DEVICE:-cuda}"
 
+# ── OpenVINS scheduling ────────────────────────────────────────────────────
+# OpenVINS subscribes to the IMU with SensorDataQoS (ROS2Visualizer.cpp:170):
+# best-effort, queue depth 5 = 50 ms at 100 Hz. Any executor stall longer than
+# that silently drops IMU samples -- harmless at rest, fatal while walking.
+# Replaying the same bag offline is stable; only the live process diverged.
+# OV_CORES  : keep OpenVINS off the sensor stack's cores (bringup pins the ZED
+#             to 2-4 and Xsens to 5), so RT priority can never starve them.
+# OV_RTPRIO : SCHED_FIFO priority applied to every OpenVINS thread after launch.
+#             Needs sudo (prompts once), or grant it permanently with
+#             'neurolab - rtprio 99' in /etc/security/limits.conf. 0 = disabled.
+OV_CORES="0,1,6,7"
+OV_RTPRIO=50
+
 # ── Parent directory for run folders ──────────────────────────────────────
 # Each run creates $OUTPUT_DIR/zedx_<TIMESTAMP>/ holding that run's CSV,
 # rosbag and timing log.
@@ -111,6 +127,13 @@ for arg in "$@"; do
 done
 
 [[ -n "$USE_CLAHE_FLAG" ]] && USE_CLAHE="$USE_CLAHE_FLAG"
+
+# Ask for the sudo password now, on a clean terminal, so the chrt step later
+# can't have its prompt buried under node output. The ticket stays cached.
+if [[ "$OV_RTPRIO" -gt 0 ]] && ! sudo -n true 2>/dev/null; then
+    echo "[run_zedx_live] sudo needed once to set OpenVINS real-time priority (OV_RTPRIO=$OV_RTPRIO)"
+    sudo -v || echo "[run_zedx_live] [WARN] sudo declined — OpenVINS will run at normal priority"
+fi
 
 # ── Per-run output folder ──────────────────────────────────────────────────
 # One folder per experiment keeps that run's trajectory CSV, rosbag and timing
@@ -272,17 +295,42 @@ echo "[run_zedx_live] Starting OpenVINS..."
 if $USE_TIMING; then
     # Tee stdout+stderr to the combined timing log so parse_timing.py can read it.
     # YOLO masker [TIMING] lines also land in the same file (see masker launch above).
-    ros2 launch ov_msckf subscribe.launch.py \
+    taskset -c "$OV_CORES" ros2 launch ov_msckf subscribe.launch.py \
         config_path:="$CONFIG_PATH" \
         rviz_enable:="$USE_RVIZ" \
         verbosity:=ALL 2>&1 | tee -a "$TIMING_LOG" &
 else
-    ros2 launch ov_msckf subscribe.launch.py \
+    taskset -c "$OV_CORES" ros2 launch ov_msckf subscribe.launch.py \
         config_path:="$CONFIG_PATH" \
         rviz_enable:="$USE_RVIZ" \
         verbosity:=INFO &
 fi
 PIDS+=($!)
+
+# Raise the estimator to SCHED_FIFO. chrt -p on a PID only changes that one
+# thread, so every thread under /proc/<pid>/task is set (same reason the sensor
+# bringup iterates tasks for taskset). Worker threads exist once the node is up.
+if [[ "$OV_RTPRIO" -gt 0 ]]; then
+    _ovpid=""
+    for _ in $(seq 1 60); do
+        # Linux truncates comm to 15 chars, so the node shows up as "run_subscribe_m".
+        # -x on that is exact and cannot match this script or the ros2 launch wrapper.
+        _ovpid=$(pgrep -x run_subscribe_m | head -1 || true)   # set -e: pgrep=1 when not found
+        [[ -n "$_ovpid" ]] && break
+        sleep 0.25
+    done
+    if [[ -z "$_ovpid" ]]; then
+        echo "[run_zedx_live] [WARN] OpenVINS pid not found — running at normal priority"
+    elif sudo -n true 2>/dev/null || sudo -v; then
+        sleep 1
+        for _t in /proc/"$_ovpid"/task/*; do
+            sudo chrt -f -p "$OV_RTPRIO" "$(basename "$_t")" >/dev/null 2>&1 || true
+        done
+        echo "[run_zedx_live] OpenVINS pid $_ovpid → $(chrt -p "$_ovpid" | head -1 | sed 's/.*: //'), prio $OV_RTPRIO, cores $OV_CORES, $(ls /proc/"$_ovpid"/task | wc -l) threads"
+    else
+        echo "[run_zedx_live] [WARN] sudo declined — OpenVINS running at normal priority on cores $OV_CORES"
+    fi
+fi
 
 # ────────────────────────────────────────────────────────────────────────────
 # 3. path_recorder (optional — comment out if you don't need trajectory CSV)
@@ -306,6 +354,7 @@ printf  "│  Masking:   %-46s│\n" "$(if $USE_MASK; then echo "YOLO ($MODEL_PA
 printf  "│  IMU:       %-46s│\n" "$IMU_TOPIC"
 printf  "│  Camera L:  %-46s│\n" "$ZED_LEFT_TOPIC"
 printf  "│  Preproc:   %-46s│\n" "clahe=$USE_CLAHE flow=$USE_FLOW_CLASSIFIER"
+printf  "│  Sched:     %-46s│\n" "cores $OV_CORES, $(if [[ "$OV_RTPRIO" -gt 0 ]]; then echo "SCHED_FIFO $OV_RTPRIO"; else echo "normal priority"; fi)"
 printf  "│  Bag:       %-46s│\n" "$(if $RECORD_BAG; then echo "bag/"; else echo "not recording"; fi)"
 printf  "│  Output:    %-46s│\n" "$(basename "$RUN_DIR")"
 echo "└──────────────────────────────────────────────────────────┘"
